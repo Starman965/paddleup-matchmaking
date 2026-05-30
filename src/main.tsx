@@ -330,11 +330,15 @@ function App() {
   const visiblePlayers = useMemo(() => {
     const search = playerSearch.trim().toLowerCase();
     return allUsers
-      .filter((user) => user.uid !== activeUserId)
-      .filter((user) => playerTab === "community" || playmateIds.has(user.uid))
+      .filter((user) => user.uid === activeUserId || playerTab === "community" || playmateIds.has(user.uid))
       .filter((user) => {
         if (!search) return true;
         return `${user.firstName} ${user.lastName} ${user.email}`.toLowerCase().includes(search);
+      })
+      .sort((userA, userB) => {
+        if (userA.uid === activeUserId) return -1;
+        if (userB.uid === activeUserId) return 1;
+        return `${userA.firstName} ${userA.lastName}`.localeCompare(`${userB.firstName} ${userB.lastName}`);
       });
   }, [activeUserId, allUsers, playmateIds, playerSearch, playerTab]);
 
@@ -758,6 +762,7 @@ function App() {
               search={playerSearch}
               setSearch={setPlayerSearch}
               visiblePlayers={visiblePlayers}
+              activeUserId={activeUserId}
               playmateIds={playmateIds}
               availabilityByUserId={activeAvailabilityByUserId}
               onToggle={togglePlaymate}
@@ -948,6 +953,7 @@ function PlayersScreen({
   search,
   setSearch,
   visiblePlayers,
+  activeUserId,
   playmateIds,
   availabilityByUserId,
   onToggle
@@ -957,6 +963,7 @@ function PlayersScreen({
   search: string;
   setSearch: (search: string) => void;
   visiblePlayers: User[];
+  activeUserId: string;
   playmateIds: Set<string>;
   availabilityByUserId: Map<string, Availability>;
   onToggle: (uid: string) => void;
@@ -978,19 +985,24 @@ function PlayersScreen({
       <div className="list glass-panel">
         {visiblePlayers.length === 0 && <p className="empty-copy">No players found.</p>}
         {visiblePlayers.map((user) => {
+          const isSelf = user.uid === activeUserId;
           const isPlaymate = playmateIds.has(user.uid);
           const availability = availabilityByUserId.get(user.uid);
           return (
-            <article className="player-row" key={user.uid}>
+            <article className={`player-row ${isSelf ? "self" : ""}`} key={user.uid}>
               <Avatar user={user} />
               <div>
-                <strong>{user.firstName} {user.lastName}</strong>
+                <strong>{user.firstName} {user.lastName}{isSelf ? " · You" : ""}</strong>
                 <span>{availability ? availabilityStatus(availability) : locationById.get(user.locationId)?.name}</span>
               </div>
               {availability && <span className="availability-badge">{availability.type === "readyNow" ? "Now" : availability.type === "tomorrow" ? "Tmrw" : "Today"}</span>}
-              <button className="small-icon" onClick={() => onToggle(user.uid)} aria-label={isPlaymate ? "Remove playmate" : "Add playmate"}>
-                {isPlaymate ? <UserMinus size={18} /> : <UserPlus size={18} />}
-              </button>
+              {isSelf ? (
+                <span className="self-badge">You</span>
+              ) : (
+                <button className="small-icon" onClick={() => onToggle(user.uid)} aria-label={isPlaymate ? "Remove playmate" : "Add playmate"}>
+                  {isPlaymate ? <UserMinus size={18} /> : <UserPlus size={18} />}
+                </button>
+              )}
             </article>
           );
         })}
