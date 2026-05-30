@@ -80,6 +80,10 @@ function gameFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Game {
     id: readString(data.id, snapshot.id),
     locationId: readString(data.locationId, "blackhawk"),
     type: data.type === "singles" ? "singles" : "doubles",
+    availabilityType:
+      data.availabilityType === "laterToday" || data.availabilityType === "tomorrow" || data.availabilityType === "readyNow"
+        ? data.availabilityType
+        : undefined,
     status: data.status === "confirmed" || data.status === "completed" ? data.status : "forming",
     requiredPlayers: data.requiredPlayers === 2 ? 2 : 4,
     playerIds: readStringArray(data.playerIds),
@@ -145,6 +149,27 @@ export async function markReadyNow(userId: string, locationId: string, durationM
     startTime: now.toISOString(),
     endTime: expiresAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
+    updatedAt: serverTimestamp()
+  });
+}
+
+export async function saveAvailabilityWindow(
+  userId: string,
+  locationId: string,
+  type: "laterToday" | "tomorrow",
+  startTime: string,
+  endTime: string
+) {
+  const availabilityId = `${userId}_${type}`;
+
+  await setDoc(doc(db, "availability", availabilityId), {
+    id: availabilityId,
+    userId,
+    locationId,
+    type,
+    startTime,
+    endTime,
+    expiresAt: endTime,
     updatedAt: serverTimestamp()
   });
 }

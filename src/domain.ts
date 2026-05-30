@@ -42,6 +42,7 @@ export type Game = {
   id: string;
   locationId: string;
   type: MatchType;
+  availabilityType?: Exclude<AvailabilityType, "weekend">;
   status: GameStatus;
   requiredPlayers: 2 | 4;
   playerIds: string[];

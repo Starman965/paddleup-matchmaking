@@ -4,9 +4,7 @@ import { onAuthStateChanged, signInWithPopup, signOut, type User as FirebaseUser
 import {
   Bell,
   Calendar,
-  Check,
   ChevronRight,
-  Clock3,
   Home,
   MapPin,
   Plus,
@@ -27,6 +25,7 @@ import {
   markNotificationRead,
   markNotificationsRead,
   resetTestData,
+  saveAvailabilityWindow,
   setPlaymateEnabled,
   subscribeLocation,
   subscribeLocationAvailability,
@@ -43,6 +42,14 @@ const locationById = new Map(locations.map((location) => [location.id, location]
 const defaultCourtOptions = Array.from({ length: 10 }, (_, index) => `Court ${index + 1}`);
 const adminEmails = new Set(["demandgendave@gmail.com"]);
 
+type MatchFeedback = {
+  type: Exclude<AvailabilityType, "weekend">;
+  status: "idle" | "saving" | "waiting" | "forming" | "confirmed" | "alreadyActive" | "error";
+  title: string;
+  body: string;
+  previousGameIds?: string[];
+};
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
@@ -55,6 +62,24 @@ function formatDay(value: string) {
   tomorrow.setDate(now.getDate() + 1);
   if (date.toDateString() === tomorrow.toDateString()) return "Tomorrow";
   return new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(date);
+}
+
+function dateForAvailability(type: "laterToday" | "tomorrow") {
+  const date = new Date();
+  if (type === "tomorrow") date.setDate(date.getDate() + 1);
+  return date;
+}
+
+function isoForTime(type: "laterToday" | "tomorrow", time: string) {
+  const [hours = "0", minutes = "0"] = time.split(":");
+  const date = dateForAvailability(type);
+  date.setHours(Number(hours), Number(minutes), 0, 0);
+  return date.toISOString();
+}
+
+function availabilityStatus(availability: Availability) {
+  if (availability.type === "readyNow") return "Ready Now";
+  return `${availability.type === "tomorrow" ? "Tomorrow" : "Today"} ${formatTime(availability.startTime)}-${formatTime(availability.endTime)}`;
 }
 
 function initials(user: User) {
@@ -81,6 +106,10 @@ function App() {
   const [playerSearch, setPlayerSearch] = useState("");
   const [availabilityMode, setAvailabilityMode] = useState<AvailabilityType>("readyNow");
   const [duration, setDuration] = useState(60);
+  const [laterTodayStart, setLaterTodayStart] = useState("13:00");
+  const [laterTodayEnd, setLaterTodayEnd] = useState("17:00");
+  const [tomorrowStart, setTomorrowStart] = useState("08:00");
+  const [tomorrowEnd, setTomorrowEnd] = useState("12:00");
   const [playmateState, setPlaymateState] = useState<Playmate[]>(seedPlaymates);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [firebaseStatus, setFirebaseStatus] = useState("Sign in to save availability and see live games.");
@@ -96,6 +125,7 @@ function App() {
   const [leavingGameId, setLeavingGameId] = useState<string | null>(null);
   const [activeLocation, setActiveLocation] = useState(locations[0]);
   const [adminBusy, setAdminBusy] = useState(false);
+  const [matchFeedback, setMatchFeedback] = useState<MatchFeedback | null>(null);
 
   useEffect(() => {
     initializeAnalytics();
@@ -227,6 +257,10 @@ function App() {
     () => displayGames.filter((game) => game.playerIds.includes(activeUserId)),
     [activeUserId, displayGames]
   );
+  const activeMyGames = useMemo(
+    () => myGames.filter((game) => game.status === "forming" || game.status === "confirmed"),
+    [myGames]
+  );
   const nextGame = displayGames.find((game) => game.status === "confirmed" && game.playerIds.includes(activeUserId));
   const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
   const courtOptions = activeLocation.courtLabels?.length ? activeLocation.courtLabels : defaultCourtOptions;
@@ -240,6 +274,42 @@ function App() {
         .map((availability) => [availability.userId, availability])
     );
   }, [liveAvailability]);
+  const currentUserAvailability = activeAvailabilityByUserId.get(activeUserId);
+
+  useEffect(() => {
+    if (!matchFeedback || matchFeedback.status === "confirmed" || matchFeedback.status === "alreadyActive" || matchFeedback.status === "error") return;
+
+    const matchingGame = activeMyGames.find(
+      (game) => (game.availabilityType ?? "readyNow") === matchFeedback.type || game.playerIds.includes(activeUserId)
+    );
+    if (matchingGame) {
+      const matchingStatus = matchingGame.status === "confirmed" ? "confirmed" : "forming";
+      const previousGameIds = new Set(matchFeedback.previousGameIds ?? []);
+      const joinedExisting = previousGameIds.has(matchingGame.id);
+      const nextTitle = matchingStatus === "confirmed" ? "Game Confirmed" : joinedExisting ? "Added To A Forming Game" : "New Game Forming";
+      const nextBody =
+        matchingStatus === "confirmed"
+          ? `${matchingGame.playerIds.length}/${matchingGame.requiredPlayers} players are in. Check My Games for meet time and court.`
+          : `${matchingGame.playerIds.length}/${matchingGame.requiredPlayers} players are in. Need ${Math.max(0, matchingGame.requiredPlayers - matchingGame.playerIds.length)} more.`;
+      if (matchFeedback.status === matchingStatus && matchFeedback.title === nextTitle && matchFeedback.body === nextBody) return;
+      setMatchFeedback({
+        ...matchFeedback,
+        status: matchingStatus,
+        title: nextTitle,
+        body: nextBody
+      });
+      return;
+    }
+
+    if (currentUserAvailability?.type === matchFeedback.type && matchFeedback.status !== "waiting") {
+      setMatchFeedback({
+        ...matchFeedback,
+        status: "waiting",
+        title: "Availability Saved",
+        body: "Looking for compatible players. You will see a forming game here as soon as PaddleUp finds one."
+      });
+    }
+  }, [activeMyGames, activeUserId, currentUserAvailability, matchFeedback]);
 
   function openCourtPicker(game: Game) {
     setCourtPickerGame(game);
@@ -292,6 +362,63 @@ function App() {
       })
       .catch((error: Error) => setFirebaseStatus(`Leaving game failed: ${error.message}`))
       .finally(() => setLeavingGameId(null));
+  }
+
+  function beginMatchingFeedback(type: Exclude<AvailabilityType, "weekend">) {
+    const existingActiveGame = activeMyGames[0];
+    if (existingActiveGame) {
+      setMatchFeedback({
+        type: (existingActiveGame.availabilityType ?? type) as Exclude<AvailabilityType, "weekend">,
+        status: "alreadyActive",
+        title: "Already In A Game",
+        body:
+          existingActiveGame.status === "confirmed"
+            ? "You already have a confirmed game. Check My Games for details."
+            : `${existingActiveGame.playerIds.length}/${existingActiveGame.requiredPlayers} players are already in your forming game.`
+      });
+      return false;
+    }
+
+    setMatchFeedback({
+      type,
+      status: "saving",
+      title: "Saving Availability",
+      body: "PaddleUp is checking for compatible players now.",
+      previousGameIds: displayGames.filter((game) => game.status === "forming" || game.status === "confirmed").map((game) => game.id)
+    });
+    return true;
+  }
+
+  function saveWindowAvailability(type: "laterToday" | "tomorrow", startTime: string, endTime: string) {
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then availability can write to Firestore.");
+      return;
+    }
+
+    const startIso = isoForTime(type, startTime);
+    const endIso = isoForTime(type, endTime);
+    if (new Date(endIso) <= new Date(startIso)) {
+      setFirebaseStatus("Choose an end time after the start time.");
+      return;
+    }
+
+    if (!beginMatchingFeedback(type)) return;
+
+    trackEvent("availability_window_saved", { type, locationId: activeLocation.id });
+    saveAvailabilityWindow(firebaseUser.uid, activeLocation.id, type, startIso, endIso)
+      .then(() => {
+        trackEvent("availability_created", { type, locationId: activeLocation.id });
+        setFirebaseStatus(`${type === "tomorrow" ? "Tomorrow" : "Later Today"} availability saved.`);
+      })
+      .catch((error: Error) => {
+        setMatchFeedback({
+          type,
+          status: "error",
+          title: "Availability Save Failed",
+          body: error.message
+        });
+        setFirebaseStatus(`Availability save failed: ${error.message}`);
+      });
   }
 
   function togglePlaymate(uid: string) {
@@ -414,11 +541,21 @@ function App() {
               setMode={setAvailabilityMode}
               duration={duration}
               setDuration={setDuration}
+              laterTodayStart={laterTodayStart}
+              setLaterTodayStart={setLaterTodayStart}
+              laterTodayEnd={laterTodayEnd}
+              setLaterTodayEnd={setLaterTodayEnd}
+              tomorrowStart={tomorrowStart}
+              setTomorrowStart={setTomorrowStart}
+              tomorrowEnd={tomorrowEnd}
+              setTomorrowEnd={setTomorrowEnd}
               onStartMatching={() => {
                 if (!firebaseUser) {
                   setFirebaseStatus("Sign in first, then Ready Now can write to Firestore.");
                   return;
                 }
+
+                if (!beginMatchingFeedback("readyNow")) return;
 
                 trackEvent("ready_now_clicked", { durationMinutes: duration, locationId: activeLocation.id });
                 markReadyNow(firebaseUser.uid, activeLocation.id, duration)
@@ -426,13 +563,23 @@ function App() {
                     trackEvent("availability_created", { type: "readyNow", durationMinutes: duration, locationId: activeLocation.id });
                     setFirebaseStatus(`Ready Now saved for ${duration} minutes at ${activeLocation.name}.`);
                   })
-                  .catch((error: Error) => setFirebaseStatus(`Ready Now failed: ${error.message}`));
+                  .catch((error: Error) => {
+                    setMatchFeedback({
+                      type: "readyNow",
+                      status: "error",
+                      title: "Ready Now Failed",
+                      body: error.message
+                    });
+                    setFirebaseStatus(`Ready Now failed: ${error.message}`);
+                  });
               }}
+              matchFeedback={matchFeedback}
               isAdmin={isAdmin}
               adminBusy={adminBusy}
               courtCount={courtOptions.length}
               onResetTestData={runAdminResetTestData}
               onSaveCourtDefaults={saveAdminCourtDefaults}
+              onSaveWindow={saveWindowAvailability}
             />
           )}
         </section>
@@ -612,11 +759,9 @@ function PlayersScreen({
               <Avatar user={user} />
               <div>
                 <strong>{user.firstName} {user.lastName}</strong>
-                <span>
-                  {availability?.type === "readyNow" ? "Ready Now" : locationById.get(user.locationId)?.name}
-                </span>
+                <span>{availability ? availabilityStatus(availability) : locationById.get(user.locationId)?.name}</span>
               </div>
-              {availability?.type === "readyNow" && <span className="availability-badge">Now</span>}
+              {availability && <span className="availability-badge">{availability.type === "readyNow" ? "Now" : availability.type === "tomorrow" ? "Tmrw" : "Today"}</span>}
               <button className="small-icon" onClick={() => onToggle(user.uid)} aria-label={isPlaymate ? "Remove playmate" : "Add playmate"}>
                 {isPlaymate ? <UserMinus size={18} /> : <UserPlus size={18} />}
               </button>
@@ -774,25 +919,51 @@ function MeScreen({
   setMode,
   duration,
   setDuration,
+  laterTodayStart,
+  setLaterTodayStart,
+  laterTodayEnd,
+  setLaterTodayEnd,
+  tomorrowStart,
+  setTomorrowStart,
+  tomorrowEnd,
+  setTomorrowEnd,
   onStartMatching,
+  matchFeedback,
   isAdmin,
   adminBusy,
   courtCount,
   onResetTestData,
-  onSaveCourtDefaults
+  onSaveCourtDefaults,
+  onSaveWindow
 }: {
   firebaseUser: FirebaseUser | null;
   mode: AvailabilityType;
   setMode: (mode: AvailabilityType) => void;
   duration: number;
   setDuration: (duration: number) => void;
+  laterTodayStart: string;
+  setLaterTodayStart: (time: string) => void;
+  laterTodayEnd: string;
+  setLaterTodayEnd: (time: string) => void;
+  tomorrowStart: string;
+  setTomorrowStart: (time: string) => void;
+  tomorrowEnd: string;
+  setTomorrowEnd: (time: string) => void;
   onStartMatching: () => void;
+  matchFeedback: MatchFeedback | null;
   isAdmin: boolean;
   adminBusy: boolean;
   courtCount: number;
   onResetTestData: () => void;
   onSaveCourtDefaults: () => void;
+  onSaveWindow: (type: "laterToday" | "tomorrow", startTime: string, endTime: string) => void;
 }) {
+  const scheduledType = mode === "tomorrow" ? "tomorrow" : "laterToday";
+  const scheduledStart = scheduledType === "tomorrow" ? tomorrowStart : laterTodayStart;
+  const scheduledEnd = scheduledType === "tomorrow" ? tomorrowEnd : laterTodayEnd;
+  const setScheduledStart = scheduledType === "tomorrow" ? setTomorrowStart : setLaterTodayStart;
+  const setScheduledEnd = scheduledType === "tomorrow" ? setTomorrowEnd : setLaterTodayEnd;
+
   return (
     <div className="stack">
       <Segmented
@@ -821,17 +992,14 @@ function MeScreen({
       ) : (
         <section className="glass-panel time-window">
           <SectionTitle title={mode === "laterToday" ? "Later Today" : "Tomorrow"} />
-          <TimeField label="Start" value={mode === "laterToday" ? "1:00 PM" : "8:00 AM"} />
-          <TimeField label="End" value={mode === "laterToday" ? "5:00 PM" : "12:00 PM"} />
-          <button className="primary-action">Save Window</button>
+          <TimeInput label="Start" value={scheduledStart} onChange={setScheduledStart} />
+          <TimeInput label="End" value={scheduledEnd} onChange={setScheduledEnd} />
+          <button className="primary-action" onClick={() => onSaveWindow(scheduledType, scheduledStart, scheduledEnd)}>
+            {firebaseUser ? "Save Availability" : "Sign In To Save"}
+          </button>
         </section>
       )}
-      <section className="glass-panel weekend">
-        <SectionTitle title="Weekend Availability" />
-        <ScheduleRow day="Saturday" times={["9:00 AM - 11:00 AM", "4:00 PM - 6:00 PM"]} />
-        <ScheduleRow day="Sunday" times={["9:00 AM - 11:30 AM"]} />
-        <button className="ghost-action"><Plus size={16} /> Add Another Window</button>
-      </section>
+      {matchFeedback && <MatchFeedbackCard feedback={matchFeedback} />}
       {isAdmin && (
         <section className="glass-panel admin-panel">
           <SectionTitle title="Admin" />
@@ -854,6 +1022,16 @@ function SectionTitle({ title, action, onClick }: { title: string; action?: stri
       <h2>{title}</h2>
       {action && <button onClick={onClick}>{action}<ChevronRight size={16} /></button>}
     </div>
+  );
+}
+
+function MatchFeedbackCard({ feedback }: { feedback: MatchFeedback }) {
+  return (
+    <section className={`match-feedback glass-panel ${feedback.status}`}>
+      <span>{feedback.type === "readyNow" ? "Ready Now" : feedback.type === "tomorrow" ? "Tomorrow" : "Later Today"}</span>
+      <strong>{feedback.title}</strong>
+      <p>{feedback.body}</p>
+    </section>
   );
 }
 
@@ -933,22 +1111,12 @@ function AvatarStack({ users, missing }: { users: User[]; missing: number }) {
   );
 }
 
-function TimeField({ label, value }: { label: string; value: string }) {
+function TimeInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
-    <div className="time-field">
+    <label className="time-field">
       <span>{label}</span>
-      <strong>{value}</strong>
-      <Clock3 size={18} />
-    </div>
-  );
-}
-
-function ScheduleRow({ day, times }: { day: string; times: string[] }) {
-  return (
-    <div className="schedule-row">
-      <div><Check size={15} /> <strong>{day}</strong></div>
-      {times.map((time) => <button key={time}>{time}<Clock3 size={15} /></button>)}
-    </div>
+      <input type="time" value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
   );
 }
 

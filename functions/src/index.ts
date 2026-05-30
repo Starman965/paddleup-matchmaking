@@ -16,6 +16,8 @@ type Availability = {
   userId?: string;
   locationId?: string;
   type?: string;
+  startTime?: string;
+  endTime?: string;
   expiresAt?: string;
 };
 
@@ -29,6 +31,7 @@ type Game = {
   id?: string;
   locationId: string;
   type: "doubles";
+  availabilityType?: "readyNow" | "laterToday" | "tomorrow";
   status: "forming" | "confirmed" | "completed";
   requiredPlayers: 4;
   playerIds: string[];
@@ -36,7 +39,22 @@ type Game = {
   createdAt?: FirebaseFirestore.FieldValue;
   updatedAt?: FirebaseFirestore.FieldValue;
   meetTime?: string;
+  startsAt?: string;
   court?: string | null;
+};
+
+type AvailabilityCandidate = {
+  userId: string;
+  availabilityId: string;
+  start: Date;
+  end: Date;
+};
+
+type MatchSelection = {
+  playerIds: string[];
+  availabilityIds: string[];
+  overlapStart: Date;
+  overlapEnd: Date;
 };
 
 export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilityId}", async (event) => {
@@ -46,40 +64,35 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
   if (!after?.exists) return;
 
   const availability = after.data() as Availability;
-  if (availability.type !== "readyNow") return;
+  if (!isMatchableAvailabilityType(availability.type)) return;
+  const availabilityType = availability.type;
   if (!availability.userId || !availability.locationId) {
-    logger.warn("Ready Now availability missing userId or locationId", { availabilityId, availability });
+    logger.warn("Availability missing userId or locationId", { availabilityId, availability });
     return;
   }
 
   const now = new Date();
-  if (availability.expiresAt && new Date(availability.expiresAt) <= now) {
-    logger.info("Ignoring expired Ready Now availability", { availabilityId });
+  const triggerWindow = availabilityWindow(availability);
+  if (!triggerWindow || triggerWindow.end <= now) {
+    logger.info("Ignoring expired or invalid availability", { availabilityId, availabilityType });
     return;
   }
 
-  const activeReadyNow = await db
+  const activeAvailabilitySnapshot = await db
     .collection("availability")
     .where("locationId", "==", availability.locationId)
-    .where("type", "==", "readyNow")
+    .where("type", "==", availabilityType)
     .get();
 
-  const activePlayerIds: string[] = [];
-  const activeAvailabilityIdByPlayerId = new Map<string, string>();
+  const candidates: AvailabilityCandidate[] = [];
 
-  for (const doc of activeReadyNow.docs) {
+  for (const doc of activeAvailabilitySnapshot.docs) {
     const data = doc.data() as Availability;
-    if (!data.userId || !data.expiresAt) continue;
-    if (new Date(data.expiresAt) <= now) continue;
-    if (!activePlayerIds.includes(data.userId)) {
-      activePlayerIds.push(data.userId);
-      activeAvailabilityIdByPlayerId.set(data.userId, doc.id);
+    const window = availabilityWindow(data);
+    if (!data.userId || !window || window.end <= now) continue;
+    if (!candidates.some((candidate) => candidate.userId === data.userId)) {
+      candidates.push({ userId: data.userId, availabilityId: doc.id, ...window });
     }
-  }
-
-  if (!activePlayerIds.includes(availability.userId)) {
-    activePlayerIds.push(availability.userId);
-    activeAvailabilityIdByPlayerId.set(availability.userId, availabilityId);
   }
 
   const disabledPlaymateSnapshot = await db.collection("playmates").where("enabled", "==", false).get();
@@ -102,8 +115,12 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
 
     const formingSnapshot = await transaction.get(formingQuery);
     const confirmedSnapshot = await transaction.get(confirmedQuery);
-    const gameRef = formingSnapshot.empty ? db.collection("games").doc() : formingSnapshot.docs[0].ref;
-    const existing = formingSnapshot.empty ? undefined : (formingSnapshot.docs[0].data() as Game);
+    const formingDoc = formingSnapshot.docs.find((doc) => {
+      const game = doc.data() as Partial<Game>;
+      return game.availabilityType === availabilityType || (!game.availabilityType && availabilityType === "readyNow");
+    });
+    const gameRef = formingDoc ? formingDoc.ref : db.collection("games").doc();
+    const existing = formingDoc ? (formingDoc.data() as Game) : undefined;
     const existingPlayers = existing?.playerIds ?? [];
     const activeGamePlayerIds = new Set<string>();
 
@@ -115,57 +132,59 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       }
     }
 
-    const candidatePlayers = unique([...existingPlayers, ...activePlayerIds]);
-    const skippedPlayerIds = candidatePlayers.filter((playerId) => activeGamePlayerIds.has(playerId));
-    const mergedPlayers = selectCompatiblePlayers(
-      candidatePlayers.filter((playerId) => !activeGamePlayerIds.has(playerId)),
-      disabledPairs
-    ).slice(0, REQUIRED_DOUBLES_PLAYERS);
-    const incompatiblePlayerIds = candidatePlayers.filter(
-      (playerId) =>
-        !mergedPlayers.includes(playerId) &&
-        mergedPlayers.some((selectedPlayerId) => disabledPairs.includes(pairKey(playerId, selectedPlayerId)))
-    );
-    const mergedAvailabilityIds = mergedPlayers
-      .map((playerId) => activeAvailabilityIdByPlayerId.get(playerId))
-      .filter((id): id is string => Boolean(id));
+    const selection = selectAvailabilityGroup(candidates, existingPlayers, activeGamePlayerIds, disabledPairs);
+    const candidatePlayerIds = unique([...existingPlayers, ...candidates.map((candidate) => candidate.userId)]);
+    const skippedPlayerIds = candidatePlayerIds.filter((playerId) => activeGamePlayerIds.has(playerId));
 
-    if (mergedPlayers.length === 0) {
-      logger.info("No eligible Ready Now players for doubles match update", {
+    if (!selection || selection.playerIds.length === 0) {
+      logger.info("No eligible players for doubles match update", {
         availabilityId,
+        availabilityType,
         skippedPlayerIds,
         locationId: availability.locationId
       });
       return;
     }
 
-    const status = mergedPlayers.length >= REQUIRED_DOUBLES_PLAYERS ? "confirmed" : "forming";
-    const meetTime = status === "confirmed" ? new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000).toISOString() : undefined;
+    const incompatiblePlayerIds = candidatePlayerIds.filter(
+      (playerId) =>
+        !selection.playerIds.includes(playerId) &&
+        selection.playerIds.some((selectedPlayerId) => disabledPairs.includes(pairKey(playerId, selectedPlayerId)))
+    );
+
+    const status = selection.playerIds.length >= REQUIRED_DOUBLES_PLAYERS ? "confirmed" : "forming";
+    const meetTime =
+      status === "confirmed"
+        ? availabilityType === "readyNow"
+          ? new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000).toISOString()
+          : selection.overlapStart.toISOString()
+        : undefined;
 
     const game: Game = {
       id: gameRef.id,
       locationId: availability.locationId!,
       type: "doubles",
+      availabilityType,
       status,
       requiredPlayers: REQUIRED_DOUBLES_PLAYERS,
-      playerIds: mergedPlayers,
-      formedFromAvailabilityIds: unique([...(existing?.formedFromAvailabilityIds ?? []), ...mergedAvailabilityIds]),
+      playerIds: selection.playerIds,
+      formedFromAvailabilityIds: unique([...(existing?.formedFromAvailabilityIds ?? []), ...selection.availabilityIds]),
       court: existing?.court ?? null,
       createdAt: existing?.createdAt ?? FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
-      ...(meetTime ? { meetTime } : {})
+      ...(meetTime ? { meetTime, startsAt: meetTime } : {})
     };
 
     transaction.set(gameRef, game, { merge: true });
 
     const notificationType = status === "confirmed" ? "gameConfirmed" : "formingGame";
-    const notificationTitle = status === "confirmed" ? "Doubles confirmed" : `Doubles forming: ${mergedPlayers.length}/4`;
+    const notificationTitle = status === "confirmed" ? "Doubles confirmed" : `Doubles forming: ${selection.playerIds.length}/4`;
     const notificationBody =
       status === "confirmed"
-        ? `Meet in ${DEFAULT_MEET_DELAY_MINUTES} minutes. Court TBD.`
-        : `Need ${REQUIRED_DOUBLES_PLAYERS - mergedPlayers.length} more at Blackhawk.`;
+        ? `${availabilityLabel(availabilityType)} match confirmed. Court TBD.`
+        : `Need ${REQUIRED_DOUBLES_PLAYERS - selection.playerIds.length} more at Blackhawk.`;
 
-    for (const playerId of mergedPlayers) {
+    for (const playerId of selection.playerIds) {
       const notificationRef = db.collection("notifications").doc(`${gameRef.id}_${notificationType}_${playerId}`);
       transaction.set(
         notificationRef,
@@ -183,10 +202,11 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       );
     }
 
-    logger.info("Ready Now doubles match updated", {
+    logger.info("Doubles match updated", {
       gameId: gameRef.id,
+      availabilityType,
       status,
-      playerCount: mergedPlayers.length,
+      playerCount: selection.playerIds.length,
       skippedPlayerIds,
       incompatiblePlayerIds,
       locationId: availability.locationId
@@ -264,7 +284,7 @@ export const leaveGame = onCall(async (request) => {
   }
 
   const gameRef = db.collection("games").doc(gameId);
-  const readyNowAvailabilityRef = db.collection("availability").doc(`${uid}_readyNow`);
+  const availabilityRefs = ["readyNow", "laterToday", "tomorrow"].map((type) => db.collection("availability").doc(`${uid}_${type}`));
   await db.runTransaction(async (transaction) => {
     const gameSnapshot = await transaction.get(gameRef);
     if (!gameSnapshot.exists) {
@@ -283,7 +303,7 @@ export const leaveGame = onCall(async (request) => {
     const remainingPlayerIds = game.playerIds.filter((playerId) => playerId !== uid);
     const status = remainingPlayerIds.length >= REQUIRED_DOUBLES_PLAYERS ? "confirmed" : "forming";
 
-    transaction.delete(readyNowAvailabilityRef);
+    availabilityRefs.forEach((availabilityRef) => transaction.delete(availabilityRef));
 
     if (remainingPlayerIds.length === 0) {
       transaction.delete(gameRef);
@@ -393,17 +413,72 @@ function unique(values: string[]) {
   return [...new Set(values.filter(Boolean))];
 }
 
+function isMatchableAvailabilityType(value: unknown): value is "readyNow" | "laterToday" | "tomorrow" {
+  return value === "readyNow" || value === "laterToday" || value === "tomorrow";
+}
+
+function availabilityWindow(availability: Availability) {
+  const start = availability.startTime ? new Date(availability.startTime) : undefined;
+  const endValue = availability.endTime || availability.expiresAt;
+  const end = endValue ? new Date(endValue) : undefined;
+
+  if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    return undefined;
+  }
+
+  return { start, end };
+}
+
+function availabilityLabel(type: string) {
+  if (type === "laterToday") return "Later Today";
+  if (type === "tomorrow") return "Tomorrow";
+  return "Ready Now";
+}
+
 function pairKey(userA: string, userB: string) {
   return [userA, userB].sort().join("__");
 }
 
-function selectCompatiblePlayers(candidatePlayers: string[], disabledPairs: string[]) {
-  const selectedPlayers: string[] = [];
-  for (const playerId of candidatePlayers) {
-    const compatible = selectedPlayers.every((selectedPlayerId) => !disabledPairs.includes(pairKey(playerId, selectedPlayerId)));
-    if (compatible) selectedPlayers.push(playerId);
+function selectAvailabilityGroup(
+  candidates: AvailabilityCandidate[],
+  existingPlayerIds: string[],
+  activeGamePlayerIds: Set<string>,
+  disabledPairs: string[]
+): MatchSelection | undefined {
+  const candidateByUserId = new Map(candidates.map((candidate) => [candidate.userId, candidate]));
+  const orderedPlayerIds = unique([...existingPlayerIds, ...candidates.map((candidate) => candidate.userId)]).filter(
+    (playerId) => candidateByUserId.has(playerId) && !activeGamePlayerIds.has(playerId)
+  );
+  const selectedCandidates: AvailabilityCandidate[] = [];
+  let overlapStart: Date | undefined;
+  let overlapEnd: Date | undefined;
+
+  for (const playerId of orderedPlayerIds) {
+    const candidate = candidateByUserId.get(playerId);
+    if (!candidate) continue;
+
+    const compatible = selectedCandidates.every((selected) => !disabledPairs.includes(pairKey(candidate.userId, selected.userId)));
+    if (!compatible) continue;
+
+    const nextOverlapStart = new Date(Math.max(overlapStart?.getTime() ?? candidate.start.getTime(), candidate.start.getTime()));
+    const nextOverlapEnd = new Date(Math.min(overlapEnd?.getTime() ?? candidate.end.getTime(), candidate.end.getTime()));
+    if (nextOverlapEnd <= nextOverlapStart) continue;
+
+    selectedCandidates.push(candidate);
+    overlapStart = nextOverlapStart;
+    overlapEnd = nextOverlapEnd;
+
+    if (selectedCandidates.length >= REQUIRED_DOUBLES_PLAYERS) break;
   }
-  return selectedPlayers;
+
+  if (!overlapStart || !overlapEnd) return undefined;
+
+  return {
+    playerIds: selectedCandidates.map((candidate) => candidate.userId),
+    availabilityIds: selectedCandidates.map((candidate) => candidate.availabilityId),
+    overlapStart,
+    overlapEnd
+  };
 }
 
 function assertAdmin(email: unknown) {

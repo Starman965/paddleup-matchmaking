@@ -450,6 +450,40 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
 .duration-grid button.selected { color: white; background: #0b7d43; }
 .duration-grid button.selected span { color: rgba(255,255,255,0.82); }
 .primary-action { width: 100%; margin-top: 14px; }
+.match-feedback {
+  padding: 14px;
+  box-shadow: 0 12px 34px rgba(11, 125, 67, 0.1), inset 0 0 0 1px rgba(141, 226, 172, 0.28);
+}
+.match-feedback span {
+  display: inline-grid;
+  place-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  color: #0b6a38;
+  background: rgba(218, 255, 226, 0.78);
+  font-size: 10px;
+  font-weight: 900;
+}
+.match-feedback strong {
+  display: block;
+  margin-top: 9px;
+  font-size: 15px;
+}
+.match-feedback p {
+  margin: 5px 0 0;
+  color: #607267;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+}
+.match-feedback.error {
+  box-shadow: 0 12px 34px rgba(140, 45, 32, 0.1), inset 0 0 0 1px rgba(255, 170, 150, 0.3);
+}
+.match-feedback.error span {
+  color: #8c2d20;
+  background: rgba(255, 230, 225, 0.76);
+}
 .danger-action {
   width: 100%;
   min-height: 40px;
@@ -474,7 +508,7 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
 .time-window { padding: 14px; }
 .time-field {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 9px;
   min-height: 48px;
@@ -484,29 +518,14 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   background: rgba(255,255,255,0.52);
 }
 .time-field span { color: #607267; font-size: 12px; font-weight: 800; }
-.time-field strong { font-size: 14px; }
-
-.weekend { padding: 14px; }
-.schedule-row { display: grid; gap: 8px; margin-top: 12px; }
-.schedule-row div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #244532;
-  font-size: 14px;
-}
-.schedule-row div svg { color: #0b7d43; }
-.schedule-row button {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  min-height: 40px;
-  padding: 0 11px;
-  border-radius: 14px;
-  color: #304d3a;
-  background: rgba(255,255,255,0.55);
-  font-size: 13px;
-  font-weight: 750;
+.time-field input {
+  border: 0;
+  outline: 0;
+  color: #173522;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 850;
+  text-align: right;
 }
 .ghost-action {
   width: 100%;
