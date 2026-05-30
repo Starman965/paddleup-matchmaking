@@ -403,35 +403,28 @@ export const resetTestData = onCall(async (request) => {
   const testUsersSnapshot = await db.collection("users").where("isTestUser", "==", true).get();
   testUsersSnapshot.docs.forEach((doc) => testUserIds.add(doc.id));
 
-  const deletes: FirebaseFirestore.DocumentReference[] = [];
-  testUsersSnapshot.docs.forEach((doc) => deletes.push(doc.ref));
+  const deleteRefs = new Map<string, FirebaseFirestore.DocumentReference>();
+  const addDelete = (ref: FirebaseFirestore.DocumentReference) => deleteRefs.set(ref.path, ref);
+  testUsersSnapshot.docs.forEach((doc) => addDelete(doc.ref));
 
   const availabilitySnapshot = await db.collection("availability").get();
   availabilitySnapshot.docs.forEach((doc) => {
-    const availability = doc.data() as Availability;
-    if ((availability.userId && testUserIds.has(availability.userId)) || doc.id.includes("test-player")) {
-      deletes.push(doc.ref);
-    }
+    addDelete(doc.ref);
   });
 
   const gamesSnapshot = await db.collection("games").get();
   gamesSnapshot.docs.forEach((doc) => {
-    const game = doc.data() as Partial<Game>;
-    if ((game.playerIds ?? []).some((playerId) => testUserIds.has(playerId))) {
-      deletes.push(doc.ref);
-    }
+    addDelete(doc.ref);
   });
 
   const notificationsSnapshot = await db.collection("notifications").get();
   notificationsSnapshot.docs.forEach((doc) => {
-    const notification = doc.data();
-    if (testUserIds.has(notification.userId) || String(doc.id).includes("test-player")) {
-      deletes.push(doc.ref);
-    }
+    addDelete(doc.ref);
   });
 
+  const deletes = [...deleteRefs.values()];
   await deleteInBatches(deletes);
-  logger.info("Admin reset test data", { count: deletes.length, admin: request.auth?.token.email });
+  logger.info("Admin cleared test activity", { count: deletes.length, admin: request.auth?.token.email });
   return { deletedCount: deletes.length };
 });
 

@@ -612,8 +612,8 @@ function App() {
   function runAdminResetTestData() {
     setAdminBusy(true);
     resetTestData()
-      .then(({ deletedCount }) => setFirebaseStatus(`Admin reset complete. Deleted ${deletedCount} test records.`))
-      .catch((error: Error) => setFirebaseStatus(`Admin reset failed: ${error.message}`))
+      .then(({ deletedCount }) => setFirebaseStatus(`Admin cleanup complete. Deleted ${deletedCount} activity records.`))
+      .catch((error: Error) => setFirebaseStatus(`Admin cleanup failed: ${error.message}`))
       .finally(() => setAdminBusy(false));
   }
 
@@ -1174,7 +1174,7 @@ function MeScreen({
             Save Blackhawk Court 1-10 Defaults
           </button>
           <button className="danger-action" disabled={adminBusy} onClick={onResetTestData}>
-            Reset Test Data
+            Clear Test Activity
           </button>
         </section>
       )}
