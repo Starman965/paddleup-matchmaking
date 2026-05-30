@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
+import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { logger } from "firebase-functions";
 
 initializeApp();
@@ -138,6 +139,64 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       locationId: availability.locationId
     });
   });
+});
+
+export const assignCourt = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sign in before assigning a court.");
+  }
+
+  const gameId = typeof request.data?.gameId === "string" ? request.data.gameId : "";
+  const court = typeof request.data?.court === "string" ? request.data.court.trim() : "";
+
+  if (!gameId) {
+    throw new HttpsError("invalid-argument", "Missing game ID.");
+  }
+
+  if (!court || court.length > 40) {
+    throw new HttpsError("invalid-argument", "Court must be 1 to 40 characters.");
+  }
+
+  const gameRef = db.collection("games").doc(gameId);
+
+  await db.runTransaction(async (transaction) => {
+    const gameSnapshot = await transaction.get(gameRef);
+    if (!gameSnapshot.exists) {
+      throw new HttpsError("not-found", "Game not found.");
+    }
+
+    const game = gameSnapshot.data() as Game;
+    if (!game.playerIds.includes(uid)) {
+      throw new HttpsError("permission-denied", "Only players in this game can assign a court.");
+    }
+
+    transaction.update(gameRef, {
+      court,
+      updatedAt: FieldValue.serverTimestamp()
+    });
+
+    for (const playerId of game.playerIds) {
+      const notificationRef = db.collection("notifications").doc(`${gameRef.id}_courtAssigned_${playerId}`);
+      transaction.set(
+        notificationRef,
+        {
+          id: notificationRef.id,
+          userId: playerId,
+          gameId: gameRef.id,
+          type: "courtAssigned",
+          title: "Court assigned",
+          body: court,
+          read: false,
+          createdAt: FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+    }
+  });
+
+  logger.info("Court assigned", { gameId, court, assignedBy: uid });
+  return { gameId, court };
 });
 
 function unique(values: string[]) {

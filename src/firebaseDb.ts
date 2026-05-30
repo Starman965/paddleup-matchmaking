@@ -11,7 +11,8 @@ import {
   type Unsubscribe
 } from "firebase/firestore";
 import type { User as FirebaseUser } from "firebase/auth";
-import { db } from "./firebase";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "./firebase";
 import type { Game, Notification, User } from "./domain";
 
 function timestampToIso(value: unknown) {
@@ -143,4 +144,9 @@ export function subscribeUserNotifications(
       ),
     onError
   );
+}
+
+export async function assignGameCourt(gameId: string, court: string) {
+  const assignCourt = httpsCallable<{ gameId: string; court: string }, { gameId: string; court: string }>(functions, "assignCourt");
+  await assignCourt({ gameId, court });
 }

@@ -20,7 +20,14 @@ import {
 import { currentUserId, games as seedGames, locations, playmates as seedPlaymates, users as seedUsers } from "./data";
 import type { AvailabilityType, Game, Notification, TabKey, User } from "./domain";
 import { auth, googleProvider, initializeAnalytics } from "./firebase";
-import { markReadyNow, subscribeLocationGames, subscribeLocationUsers, subscribeUserNotifications, upsertCurrentUser } from "./firebaseDb";
+import {
+  assignGameCourt,
+  markReadyNow,
+  subscribeLocationGames,
+  subscribeLocationUsers,
+  subscribeUserNotifications,
+  upsertCurrentUser
+} from "./firebaseDb";
 import "./styles.css";
 
 const locationById = new Map(locations.map((location) => [location.id, location]));
@@ -64,7 +71,6 @@ function App() {
   const [duration, setDuration] = useState(60);
   const [playmateState, setPlaymateState] = useState(seedPlaymates);
   const [joinedGameIds, setJoinedGameIds] = useState<string[]>([]);
-  const [assignedCourts, setAssignedCourts] = useState<Record<string, string>>({ g2: "Court TBD", g3: "Court TBD" });
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [firebaseStatus, setFirebaseStatus] = useState("Firebase connected. Sign in to write live availability.");
   const [liveUsers, setLiveUsers] = useState<User[]>([]);
@@ -146,11 +152,10 @@ function App() {
       const sourceGames = liveGames.length > 0 ? liveGames : seedGames;
       return sourceGames.map((game) => ({
         ...game,
-        playerIds: joinedGameIds.includes(game.id) && !game.playerIds.includes(activeUserId) ? [...game.playerIds, activeUserId] : game.playerIds,
-        court: assignedCourts[game.id] || game.court
+        playerIds: joinedGameIds.includes(game.id) && !game.playerIds.includes(activeUserId) ? [...game.playerIds, activeUserId] : game.playerIds
       }));
     },
-    [activeUserId, assignedCourts, joinedGameIds, liveGames]
+    [activeUserId, joinedGameIds, liveGames]
   );
   const nextGame = displayGames.find((game) => game.status === "confirmed" && game.playerIds.includes(activeUserId));
   const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
@@ -220,7 +225,16 @@ function App() {
             <GamesScreen
               games={displayGames}
               userById={userById}
-              onAssignCourt={(gameId) => setAssignedCourts((courts) => ({ ...courts, [gameId]: courts[gameId] === "Court 4" ? "Court TBD" : "Court 4" }))}
+              onAssignCourt={(gameId) => {
+                if (!firebaseUser) {
+                  setFirebaseStatus("Sign in first, then you can assign a court.");
+                  return;
+                }
+
+                assignGameCourt(gameId, "Court 4")
+                  .then(() => setFirebaseStatus("Court 4 assigned. Players have been notified."))
+                  .catch((error: Error) => setFirebaseStatus(`Court assignment failed: ${error.message}`));
+              }}
             />
           )}
           {activeTab === "me" && (
