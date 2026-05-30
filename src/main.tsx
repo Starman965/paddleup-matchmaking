@@ -478,8 +478,8 @@ function App() {
 
   const nav = [
     { key: "home" as const, label: "Home", icon: Home },
-    { key: "players" as const, label: "Players", icon: Users },
     { key: "games" as const, label: "My Games", icon: Calendar },
+    { key: "players" as const, label: "Players", icon: Users },
     { key: "me" as const, label: "Me", icon: UserRound }
   ];
 
@@ -671,9 +671,17 @@ function HomeScreen({
         </section>
       )}
 
+      <section className="stack">
+        <SectionTitle title="Forming Games" />
+        {forming.length === 0 && <p className="empty-copy">No games forming right now. Start with Ready Now when you want to play.</p>}
+        {forming.map((game) => (
+          <FormingGame key={game.id} game={game} userById={userById} />
+        ))}
+      </section>
+
       {notifications.length > 0 && (
         <section className="stack">
-          <SectionTitle title="Latest Updates" />
+          <SectionTitle title="Your Updates" />
           {notifications.slice(0, 2).map((notification) => (
             <article
               className={`notification-card glass-panel ${notification.read ? "" : "unread"}`}
@@ -686,14 +694,6 @@ function HomeScreen({
           ))}
         </section>
       )}
-
-      <section className="stack">
-        <SectionTitle title="Forming Games" />
-        {forming.length === 0 && <p className="empty-copy">No games forming right now. Start with Ready Now when you want to play.</p>}
-        {forming.map((game) => (
-          <FormingGame key={game.id} game={game} userById={userById} />
-        ))}
-      </section>
     </div>
   );
 }
@@ -722,14 +722,14 @@ function PlayersScreen({
       <Segmented
         value={playerTab}
         options={[
-          ["playmates", "Playmates"],
-          ["community", "Community"]
+          ["playmates", "My Playmates"],
+          ["community", "All Players"]
         ]}
         onChange={(value) => setPlayerTab(value as "playmates" | "community")}
       />
       <label className="search glass-panel">
         <Search size={17} />
-        <input value={search} placeholder={`Search ${playerTab}`} onChange={(event) => setSearch(event.target.value)} />
+        <input value={search} placeholder={playerTab === "playmates" ? "Search my playmates" : "Search all players"} onChange={(event) => setSearch(event.target.value)} />
       </label>
       <div className="list glass-panel">
         {visiblePlayers.length === 0 && <p className="empty-copy">No players found.</p>}
