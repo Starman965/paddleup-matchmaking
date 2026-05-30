@@ -2,6 +2,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   onSnapshot,
   query,
   serverTimestamp,
@@ -122,15 +123,18 @@ function playmateFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Pl
 export async function upsertCurrentUser(firebaseUser: FirebaseUser, locationId: string) {
   const [firstName = "", ...lastNameParts] = (firebaseUser.displayName || "").trim().split(/\s+/);
   const lastName = lastNameParts.join(" ");
+  const userRef = doc(db, "users", firebaseUser.uid);
+  const existingUser = await getDoc(userRef);
+  const existingPhotoUrl = existingUser.exists() ? readString(existingUser.data().photoUrl) : "";
 
   await setDoc(
-    doc(db, "users", firebaseUser.uid),
+    userRef,
     {
       uid: firebaseUser.uid,
       firstName: firstName || firebaseUser.email?.split("@")[0] || "Player",
       lastName,
       email: firebaseUser.email || "",
-      photoUrl: firebaseUser.photoURL || "",
+      photoUrl: existingPhotoUrl || firebaseUser.photoURL || "",
       locationId,
       updatedAt: serverTimestamp()
     },
