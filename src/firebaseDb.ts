@@ -251,6 +251,15 @@ export async function assignGameCourt(gameId: string, court: string) {
   await assignCourt({ gameId, court });
 }
 
+export async function updateGameStartTime(gameId: string, startsAt: string) {
+  const callable = httpsCallable<{ gameId: string; startsAt: string }, { gameId: string; startsAt: string }>(
+    functions,
+    "updateGameStartTime"
+  );
+  const result = await callable({ gameId, startsAt });
+  return result.data;
+}
+
 export async function leaveGame(gameId: string) {
   const callable = httpsCallable<{ gameId: string }, { gameId: string }>(functions, "leaveGame");
   await callable({ gameId });

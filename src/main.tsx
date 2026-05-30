@@ -31,6 +31,7 @@ import {
   subscribeLocationUsers,
   subscribeUserPlaymates,
   updateLocationCourts,
+  updateGameStartTime,
   uploadProfilePhoto,
   upsertCurrentUser
 } from "./firebaseDb";
@@ -68,6 +69,19 @@ function formatDay(value: string) {
   tomorrow.setDate(now.getDate() + 1);
   if (date.toDateString() === tomorrow.toDateString()) return "Tomorrow";
   return new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(date);
+}
+
+function timeInputValue(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function isoOnSameDay(value: string, time: string) {
+  const [hours = "0", minutes = "0"] = time.split(":");
+  const date = new Date(value);
+  date.setHours(Number(hours), Number(minutes), 0, 0);
+  return date.toISOString();
 }
 
 function dateForAvailability(type: "laterToday" | "tomorrow") {
@@ -199,6 +213,7 @@ function App() {
   const [customCourt, setCustomCourt] = useState("");
   const [assigningCourt, setAssigningCourt] = useState(false);
   const [leavingGameId, setLeavingGameId] = useState<string | null>(null);
+  const [updatingStartTimeGameId, setUpdatingStartTimeGameId] = useState<string | null>(null);
   const [activeLocation, setActiveLocation] = useState(locations[0]);
   const [adminBusy, setAdminBusy] = useState(false);
   const [matchFeedback, setMatchFeedback] = useState<MatchFeedback | null>(null);
@@ -463,6 +478,23 @@ function App() {
       })
       .catch((error: Error) => setFirebaseStatus(`Leaving game failed: ${error.message}`))
       .finally(() => setLeavingGameId(null));
+  }
+
+  function updateSelectedGameStartTime(game: Game, time: string) {
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then you can update the start time.");
+      return;
+    }
+
+    const startsAt = isoOnSameDay(game.startsAt, time);
+    setUpdatingStartTimeGameId(game.id);
+    updateGameStartTime(game.id, startsAt)
+      .then(() => {
+        trackEvent("game_start_time_updated", { gameId: game.id });
+        setFirebaseStatus(`Start time updated to ${formatTime(startsAt)}.`);
+      })
+      .catch((error: Error) => setFirebaseStatus(`Start time update failed: ${error.message}`))
+      .finally(() => setUpdatingStartTimeGameId(null));
   }
 
   function beginMatchingFeedback(type: Exclude<AvailabilityType, "weekend">) {
@@ -736,8 +768,10 @@ function App() {
               userById={userById}
               activeUserId={activeUserId}
               leavingGameId={leavingGameId}
+              updatingStartTimeGameId={updatingStartTimeGameId}
               onAssignCourt={openCourtPicker}
               onLeaveGame={leaveSelectedGame}
+              onUpdateStartTime={updateSelectedGameStartTime}
             />
           )}
           {activeTab === "me" && (
@@ -951,15 +985,19 @@ function GamesScreen({
   userById,
   activeUserId,
   leavingGameId,
+  updatingStartTimeGameId,
   onAssignCourt,
-  onLeaveGame
+  onLeaveGame,
+  onUpdateStartTime
 }: {
   games: Game[];
   userById: Map<string, User>;
   activeUserId: string;
   leavingGameId: string | null;
+  updatingStartTimeGameId: string | null;
   onAssignCourt: (game: Game) => void;
   onLeaveGame: (gameId: string) => void;
+  onUpdateStartTime: (game: Game, time: string) => void;
 }) {
   const forming = games.filter((game) => game.status === "forming");
   const confirmed = games.filter((game) => game.status === "confirmed");
@@ -975,8 +1013,10 @@ function GamesScreen({
           userById={userById}
           activeUserId={activeUserId}
           isLeaving={leavingGameId === game.id}
+          isUpdatingStartTime={updatingStartTimeGameId === game.id}
           onAssignCourt={() => onAssignCourt(game)}
           onLeaveGame={() => onLeaveGame(game.id)}
+          onUpdateStartTime={(time) => onUpdateStartTime(game, time)}
         />
       ))}
       <SectionTitle title="Confirmed" />
@@ -988,8 +1028,10 @@ function GamesScreen({
           userById={userById}
           activeUserId={activeUserId}
           isLeaving={leavingGameId === game.id}
+          isUpdatingStartTime={updatingStartTimeGameId === game.id}
           onAssignCourt={() => onAssignCourt(game)}
           onLeaveGame={() => onLeaveGame(game.id)}
+          onUpdateStartTime={(time) => onUpdateStartTime(game, time)}
         />
       ))}
     </div>
@@ -1283,21 +1325,26 @@ function GameCard({
   compact,
   activeUserId,
   isLeaving,
+  isUpdatingStartTime,
   onAssignCourt,
-  onLeaveGame
+  onLeaveGame,
+  onUpdateStartTime
 }: {
   game: Game;
   userById: Map<string, User>;
   compact?: boolean;
   activeUserId?: string;
   isLeaving?: boolean;
+  isUpdatingStartTime?: boolean;
   onAssignCourt?: () => void;
   onLeaveGame?: () => void;
+  onUpdateStartTime?: (time: string) => void;
 }) {
   const location = locationById.get(game.locationId)!;
   const players = game.playerIds.map((id) => userById.get(id)!).filter(Boolean);
   const missing = game.requiredPlayers - game.playerIds.length;
   const canLeave = Boolean(activeUserId && game.playerIds.includes(activeUserId) && onLeaveGame);
+  const canUpdateStartTime = Boolean(!compact && activeUserId && game.status === "confirmed" && game.playerIds.includes(activeUserId) && onUpdateStartTime);
 
   return (
     <article className={`game-card glass-panel ${game.status}`}>
@@ -1309,6 +1356,18 @@ function GameCard({
         <button className="court-pill" onClick={onAssignCourt}>{game.court || "Court TBD"}</button>
       </div>
       <AvatarStack users={players} missing={missing} />
+      {canUpdateStartTime && (
+        <label className="start-time-control">
+          <span>{isUpdatingStartTime ? "Updating start time..." : "Start time"}</span>
+          <input
+            type="time"
+            step={900}
+            value={timeInputValue(game.startsAt)}
+            disabled={isUpdatingStartTime}
+            onChange={(event) => onUpdateStartTime?.(event.target.value)}
+          />
+        </label>
+      )}
       {!compact && <p className="need-copy">{missing > 0 ? `Need ${missing} more` : "Players confirmed"}</p>}
       {!compact && canLeave && (
         <button className="danger-action" disabled={isLeaving} onClick={onLeaveGame}>

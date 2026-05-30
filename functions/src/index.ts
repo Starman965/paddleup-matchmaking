@@ -278,6 +278,56 @@ export const assignCourt = onCall(async (request) => {
   return { gameId, court };
 });
 
+export const updateGameStartTime = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sign in before updating the start time.");
+  }
+
+  const gameId = typeof request.data?.gameId === "string" ? request.data.gameId : "";
+  const startsAt = typeof request.data?.startsAt === "string" ? request.data.startsAt : "";
+  const startsAtDate = new Date(startsAt);
+
+  if (!gameId) {
+    throw new HttpsError("invalid-argument", "Missing game ID.");
+  }
+
+  if (!startsAt || Number.isNaN(startsAtDate.getTime())) {
+    throw new HttpsError("invalid-argument", "Start time must be a valid date.");
+  }
+
+  if (startsAtDate.getMinutes() % 15 !== 0 || startsAtDate.getSeconds() !== 0 || startsAtDate.getMilliseconds() !== 0) {
+    throw new HttpsError("invalid-argument", "Start time must be in 15 minute increments.");
+  }
+
+  const gameRef = db.collection("games").doc(gameId);
+
+  await db.runTransaction(async (transaction) => {
+    const gameSnapshot = await transaction.get(gameRef);
+    if (!gameSnapshot.exists) {
+      throw new HttpsError("not-found", "Game not found.");
+    }
+
+    const game = gameSnapshot.data() as Game;
+    if (!game.playerIds.includes(uid)) {
+      throw new HttpsError("permission-denied", "Only players in this game can update the start time.");
+    }
+
+    if (game.status !== "confirmed") {
+      throw new HttpsError("failed-precondition", "Only confirmed games can have a start time override.");
+    }
+
+    transaction.update(gameRef, {
+      startsAt: startsAtDate.toISOString(),
+      meetTime: startsAtDate.toISOString(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+  });
+
+  logger.info("Game start time updated", { gameId, startsAt: startsAtDate.toISOString(), updatedBy: uid });
+  return { gameId, startsAt: startsAtDate.toISOString() };
+});
+
 export const leaveGame = onCall(async (request) => {
   const uid = request.auth?.uid;
   if (!uid) {
