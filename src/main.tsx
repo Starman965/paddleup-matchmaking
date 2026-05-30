@@ -231,6 +231,7 @@ function App() {
 
   const userById = useMemo(() => new Map(allUsers.map((user) => [user.uid, user])), [allUsers]);
   const activeUserId = firebaseUser?.uid || currentUserId;
+  const currentUser = userById.get(activeUserId) || (firebaseUser ? userFromFirebase(firebaseUser, activeLocation.id) : seedUsers[0]);
   const playmateIds = useMemo(() => {
     if (!firebaseUser) return new Set(playmateState.filter((p) => p.enabled).map((p) => p.playmateId));
     const disabledPlaymateIds = new Set(playmateState.filter((p) => !p.enabled).map((p) => p.playmateId));
@@ -469,6 +470,12 @@ function App() {
       .finally(() => setAdminBusy(false));
   }
 
+  function signIn() {
+    signInWithPopup(auth, googleProvider).catch((error: Error) => {
+      setFirebaseStatus(`Sign-in failed: ${error.message}`);
+    });
+  }
+
   const nav = [
     { key: "home" as const, label: "Home", icon: Home },
     { key: "players" as const, label: "Players", icon: Users },
@@ -480,6 +487,9 @@ function App() {
     <main className="app-shell">
       <div className="phone-frame">
         <header className="top-bar">
+          <button className={`identity-button ${firebaseUser ? "" : "signed-out"}`} onClick={firebaseUser ? () => setActiveTab("me") : signIn}>
+            {firebaseUser ? <Avatar user={currentUser} /> : "Sign In"}
+          </button>
           <div>
             <p className="location-kicker"><MapPin size={13} /> {activeLocation.name}</p>
             <h1>{activeTab === "home" ? "PaddleUp" : nav.find((item) => item.key === activeTab)?.label}</h1>
@@ -491,16 +501,6 @@ function App() {
         </header>
 
         <section className="screen">
-          <AuthStrip
-            firebaseUser={firebaseUser}
-            status={firebaseStatus}
-            onSignIn={() =>
-              signInWithPopup(auth, googleProvider).catch((error: Error) => {
-                setFirebaseStatus(`Sign-in failed: ${error.message}`);
-              })
-            }
-            onSignOut={() => signOut(auth)}
-          />
           {activeTab === "home" && (
             <HomeScreen
               nextGame={nextGame}
@@ -536,7 +536,11 @@ function App() {
           )}
           {activeTab === "me" && (
             <MeScreen
+              currentUser={currentUser}
               firebaseUser={firebaseUser}
+              status={firebaseStatus}
+              onSignIn={signIn}
+              onSignOut={() => signOut(auth)}
               mode={availabilityMode}
               setMode={setAvailabilityMode}
               duration={duration}
@@ -619,28 +623,6 @@ function App() {
         </nav>
       </div>
     </main>
-  );
-}
-
-function AuthStrip({
-  firebaseUser,
-  status,
-  onSignIn,
-  onSignOut
-}: {
-  firebaseUser: FirebaseUser | null;
-  status: string;
-  onSignIn: () => void;
-  onSignOut: () => void;
-}) {
-  return (
-    <section className="auth-strip glass-panel">
-      <div>
-        <strong>{firebaseUser ? firebaseUser.displayName || firebaseUser.email : "PaddleUp Matchmaking"}</strong>
-        <span>{status}</span>
-      </div>
-      <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
-    </section>
   );
 }
 
@@ -914,7 +896,11 @@ function NotificationSheet({
 }
 
 function MeScreen({
+  currentUser,
   firebaseUser,
+  status,
+  onSignIn,
+  onSignOut,
   mode,
   setMode,
   duration,
@@ -936,7 +922,11 @@ function MeScreen({
   onSaveCourtDefaults,
   onSaveWindow
 }: {
+  currentUser: User;
   firebaseUser: FirebaseUser | null;
+  status: string;
+  onSignIn: () => void;
+  onSignOut: () => void;
   mode: AvailabilityType;
   setMode: (mode: AvailabilityType) => void;
   duration: number;
@@ -966,6 +956,14 @@ function MeScreen({
 
   return (
     <div className="stack">
+      <section className="account-panel glass-panel">
+        <Avatar user={currentUser} />
+        <div>
+          <strong>{firebaseUser ? `${currentUser.firstName} ${currentUser.lastName}` : "PaddleUp Matchmaking"}</strong>
+          <span>{status}</span>
+        </div>
+        <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
+      </section>
       <Segmented
         value={mode}
         options={[
@@ -1099,7 +1097,11 @@ function Segmented({ value, options, onChange }: { value: string; options: strin
 }
 
 function Avatar({ user }: { user: User }) {
-  return <div className="avatar" aria-label={`${user.firstName} ${user.lastName}`}>{initials(user)}</div>;
+  return (
+    <div className="avatar" aria-label={`${user.firstName} ${user.lastName}`}>
+      {user.photoUrl ? <img src={user.photoUrl} alt="" /> : initials(user)}
+    </div>
+  );
 }
 
 function AvatarStack({ users, missing }: { users: User[]; missing: number }) {
