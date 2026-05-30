@@ -223,6 +223,10 @@ function App() {
     },
     [firebaseUser, liveGames]
   );
+  const myGames = useMemo(
+    () => displayGames.filter((game) => game.playerIds.includes(activeUserId)),
+    [activeUserId, displayGames]
+  );
   const nextGame = displayGames.find((game) => game.status === "confirmed" && game.playerIds.includes(activeUserId));
   const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
   const courtOptions = activeLocation.courtLabels?.length ? activeLocation.courtLabels : defaultCourtOptions;
@@ -395,7 +399,7 @@ function App() {
           )}
           {activeTab === "games" && (
             <GamesScreen
-              games={displayGames}
+              games={myGames}
               userById={userById}
               activeUserId={activeUserId}
               leavingGameId={leavingGameId}

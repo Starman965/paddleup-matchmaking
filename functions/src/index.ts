@@ -264,6 +264,7 @@ export const leaveGame = onCall(async (request) => {
   }
 
   const gameRef = db.collection("games").doc(gameId);
+  const readyNowAvailabilityRef = db.collection("availability").doc(`${uid}_readyNow`);
   await db.runTransaction(async (transaction) => {
     const gameSnapshot = await transaction.get(gameRef);
     if (!gameSnapshot.exists) {
@@ -281,6 +282,13 @@ export const leaveGame = onCall(async (request) => {
 
     const remainingPlayerIds = game.playerIds.filter((playerId) => playerId !== uid);
     const status = remainingPlayerIds.length >= REQUIRED_DOUBLES_PLAYERS ? "confirmed" : "forming";
+
+    transaction.delete(readyNowAvailabilityRef);
+
+    if (remainingPlayerIds.length === 0) {
+      transaction.delete(gameRef);
+      return;
+    }
 
     transaction.update(gameRef, {
       playerIds: remainingPlayerIds,
