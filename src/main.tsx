@@ -537,6 +537,44 @@ function App() {
       });
   }
 
+  function startReadyNowMatching() {
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then Ready Now can write to Firestore.");
+      return;
+    }
+
+    setAvailabilityMode("readyNow");
+    if (!beginMatchingFeedback("readyNow")) return;
+
+    trackEvent("ready_now_clicked", { durationMinutes: duration, locationId: activeLocation.id });
+    markReadyNow(firebaseUser.uid, activeLocation.id, duration)
+      .then(() => {
+        trackEvent("availability_created", { type: "readyNow", durationMinutes: duration, locationId: activeLocation.id });
+        setFirebaseStatus(`Ready Now saved for ${duration} minutes at ${activeLocation.name}.`);
+      })
+      .catch((error: Error) => {
+        setMatchFeedback({
+          type: "readyNow",
+          status: "error",
+          title: "Ready Now Failed",
+          body: error.message
+        });
+        setFirebaseStatus(`Ready Now failed: ${error.message}`);
+      });
+  }
+
+  function chooseHomeAvailability(type: Exclude<AvailabilityType, "weekend">) {
+    setAvailabilityMode(type);
+    if (type === "readyNow") {
+      startReadyNowMatching();
+      return;
+    }
+
+    const startTime = type === "tomorrow" ? tomorrowStart : laterTodayStart;
+    const endTime = type === "tomorrow" ? tomorrowEnd : laterTodayEnd;
+    saveWindowAvailability(type, startTime, endTime);
+  }
+
   function togglePlaymate(uid: string) {
     const enabled = !playmateIds.has(uid);
     setPlaymateState((records) => {
@@ -704,8 +742,9 @@ function App() {
               notifications={notifications}
               presence={currentPresence}
               counts={livePulseCounts}
+              matchFeedback={matchFeedback}
               onSetTab={setActiveTab}
-              onMode={setAvailabilityMode}
+              onChooseAvailability={chooseHomeAvailability}
               onTogglePresence={togglePresence}
               onReadNotification={markOneNotificationRead}
             />
@@ -750,30 +789,7 @@ function App() {
               setTomorrowStart={setTomorrowStart}
               tomorrowEnd={tomorrowEnd}
               setTomorrowEnd={setTomorrowEnd}
-              onStartMatching={() => {
-                if (!firebaseUser) {
-                  setFirebaseStatus("Sign in first, then Ready Now can write to Firestore.");
-                  return;
-                }
-
-                if (!beginMatchingFeedback("readyNow")) return;
-
-                trackEvent("ready_now_clicked", { durationMinutes: duration, locationId: activeLocation.id });
-                markReadyNow(firebaseUser.uid, activeLocation.id, duration)
-                  .then(() => {
-                    trackEvent("availability_created", { type: "readyNow", durationMinutes: duration, locationId: activeLocation.id });
-                    setFirebaseStatus(`Ready Now saved for ${duration} minutes at ${activeLocation.name}.`);
-                  })
-                  .catch((error: Error) => {
-                    setMatchFeedback({
-                      type: "readyNow",
-                      status: "error",
-                      title: "Ready Now Failed",
-                      body: error.message
-                    });
-                    setFirebaseStatus(`Ready Now failed: ${error.message}`);
-                  });
-              }}
+              onStartMatching={startReadyNowMatching}
               matchFeedback={matchFeedback}
               isAdmin={isAdmin}
               adminBusy={adminBusy}
@@ -834,8 +850,9 @@ function HomeScreen({
   notifications,
   presence,
   counts,
+  matchFeedback,
   onSetTab,
-  onMode,
+  onChooseAvailability,
   onTogglePresence,
   onReadNotification
 }: {
@@ -845,8 +862,9 @@ function HomeScreen({
   notifications: Notification[];
   presence: UserPresence;
   counts: ReturnType<typeof pulseCounts>;
+  matchFeedback: MatchFeedback | null;
   onSetTab: (tab: TabKey) => void;
-  onMode: (mode: AvailabilityType) => void;
+  onChooseAvailability: (mode: Exclude<AvailabilityType, "weekend">) => void;
   onTogglePresence: () => void;
   onReadNotification: (notificationId: string) => void;
 }) {
@@ -862,7 +880,7 @@ function HomeScreen({
       onSetTab("games");
       return;
     }
-    onSetTab("me");
+    onChooseAvailability("readyNow");
   };
 
   return (
@@ -878,17 +896,19 @@ function HomeScreen({
             ["laterToday", "Later Today"],
             ["tomorrow", "Tomorrow"]
           ].map(([mode, label]) => (
-            <button key={mode} onClick={() => { onMode(mode as AvailabilityType); onSetTab("me"); }}>
+            <button key={mode} onClick={() => onChooseAvailability(mode as Exclude<AvailabilityType, "weekend">)}>
               {label}
             </button>
           ))}
         </div>
       </section>
 
+      {matchFeedback && <MatchFeedbackCard feedback={matchFeedback} />}
+
       <section className="pulse-grid">
-        <PulseCard label="Ready Now" value={counts.readyNow} onClick={() => { onMode("readyNow"); onSetTab("me"); }} />
-        <PulseCard label="Later Today" value={counts.laterToday} onClick={() => { onMode("laterToday"); onSetTab("me"); }} />
-        <PulseCard label="Tomorrow" value={counts.tomorrow} onClick={() => { onMode("tomorrow"); onSetTab("me"); }} />
+        <PulseCard label="Ready Now" value={counts.readyNow} onClick={() => onChooseAvailability("readyNow")} />
+        <PulseCard label="Later Today" value={counts.laterToday} onClick={() => onChooseAvailability("laterToday")} />
+        <PulseCard label="Tomorrow" value={counts.tomorrow} onClick={() => onChooseAvailability("tomorrow")} />
         <PulseCard label="Forming" value={counts.formingGames} onClick={() => onSetTab("games")} />
       </section>
 
