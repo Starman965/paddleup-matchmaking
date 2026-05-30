@@ -20,7 +20,7 @@ import {
 import { availabilities, currentUserId, games, locations, playmates as seedPlaymates, users } from "./data";
 import type { AvailabilityType, Game, TabKey, User } from "./domain";
 import { auth, googleProvider, initializeAnalytics } from "./firebase";
-import { markReadyNow, seedBlackhawkMvp } from "./firebaseSeed";
+import { markReadyNow, upsertCurrentUser } from "./firebaseDb";
 import "./styles.css";
 
 const locationById = new Map(locations.map((location) => [location.id, location]));
@@ -60,9 +60,9 @@ function App() {
     return onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
       if (user) {
-        seedBlackhawkMvp()
-          .then(() => setFirebaseStatus("Signed in. Blackhawk MVP seed is ready."))
-          .catch((error: Error) => setFirebaseStatus(`Signed in, but seed failed: ${error.message}`));
+        upsertCurrentUser(user, locations[0].id)
+          .then(() => setFirebaseStatus("Signed in. Your PaddleUp profile is live."))
+          .catch((error: Error) => setFirebaseStatus(`Signed in, but profile save failed: ${error.message}`));
       } else {
         setFirebaseStatus("Firebase connected. Sign in to write live availability.");
       }
