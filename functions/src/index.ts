@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase-admin/app";
-import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { logger } from "firebase-functions";
@@ -9,6 +9,7 @@ initializeApp();
 const db = getFirestore();
 const REQUIRED_DOUBLES_PLAYERS = 4;
 const DEFAULT_MEET_DELAY_MINUTES = 30;
+const ADMIN_EMAILS = new Set(["demandgendave@gmail.com"]);
 
 type Availability = {
   id?: string;
@@ -18,11 +19,17 @@ type Availability = {
   expiresAt?: string;
 };
 
+type Playmate = {
+  userId?: string;
+  playmateId?: string;
+  enabled?: boolean;
+};
+
 type Game = {
   id?: string;
   locationId: string;
   type: "doubles";
-  status: "forming" | "confirmed";
+  status: "forming" | "confirmed" | "completed";
   requiredPlayers: 4;
   playerIds: string[];
   formedFromAvailabilityIds: string[];
@@ -58,7 +65,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     .get();
 
   const activePlayerIds: string[] = [];
-  const activeAvailabilityIds: string[] = [];
+  const activeAvailabilityIdByPlayerId = new Map<string, string>();
 
   for (const doc of activeReadyNow.docs) {
     const data = doc.data() as Availability;
@@ -66,28 +73,72 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     if (new Date(data.expiresAt) <= now) continue;
     if (!activePlayerIds.includes(data.userId)) {
       activePlayerIds.push(data.userId);
-      activeAvailabilityIds.push(doc.id);
+      activeAvailabilityIdByPlayerId.set(data.userId, doc.id);
     }
   }
 
   if (!activePlayerIds.includes(availability.userId)) {
     activePlayerIds.push(availability.userId);
-    activeAvailabilityIds.push(availabilityId);
+    activeAvailabilityIdByPlayerId.set(availability.userId, availabilityId);
   }
+
+  const disabledPlaymateSnapshot = await db.collection("playmates").where("enabled", "==", false).get();
+  const disabledPairs = disabledPlaymateSnapshot.docs
+    .map((doc) => doc.data() as Playmate)
+    .filter((playmate) => playmate.userId && playmate.playmateId)
+    .map((playmate) => pairKey(playmate.userId!, playmate.playmateId!));
 
   await db.runTransaction(async (transaction) => {
     const formingQuery = db
       .collection("games")
       .where("locationId", "==", availability.locationId)
       .where("type", "==", "doubles")
-      .where("status", "==", "forming")
-      .limit(1);
+      .where("status", "==", "forming");
+    const confirmedQuery = db
+      .collection("games")
+      .where("locationId", "==", availability.locationId)
+      .where("type", "==", "doubles")
+      .where("status", "==", "confirmed");
 
     const formingSnapshot = await transaction.get(formingQuery);
+    const confirmedSnapshot = await transaction.get(confirmedQuery);
     const gameRef = formingSnapshot.empty ? db.collection("games").doc() : formingSnapshot.docs[0].ref;
     const existing = formingSnapshot.empty ? undefined : (formingSnapshot.docs[0].data() as Game);
     const existingPlayers = existing?.playerIds ?? [];
-    const mergedPlayers = unique([...existingPlayers, ...activePlayerIds]).slice(0, REQUIRED_DOUBLES_PLAYERS);
+    const activeGamePlayerIds = new Set<string>();
+
+    for (const gameDoc of [...formingSnapshot.docs, ...confirmedSnapshot.docs]) {
+      if (gameDoc.id === gameRef.id) continue;
+      const game = gameDoc.data() as Partial<Game>;
+      for (const playerId of game.playerIds ?? []) {
+        activeGamePlayerIds.add(playerId);
+      }
+    }
+
+    const candidatePlayers = unique([...existingPlayers, ...activePlayerIds]);
+    const skippedPlayerIds = candidatePlayers.filter((playerId) => activeGamePlayerIds.has(playerId));
+    const mergedPlayers = selectCompatiblePlayers(
+      candidatePlayers.filter((playerId) => !activeGamePlayerIds.has(playerId)),
+      disabledPairs
+    ).slice(0, REQUIRED_DOUBLES_PLAYERS);
+    const incompatiblePlayerIds = candidatePlayers.filter(
+      (playerId) =>
+        !mergedPlayers.includes(playerId) &&
+        mergedPlayers.some((selectedPlayerId) => disabledPairs.includes(pairKey(playerId, selectedPlayerId)))
+    );
+    const mergedAvailabilityIds = mergedPlayers
+      .map((playerId) => activeAvailabilityIdByPlayerId.get(playerId))
+      .filter((id): id is string => Boolean(id));
+
+    if (mergedPlayers.length === 0) {
+      logger.info("No eligible Ready Now players for doubles match update", {
+        availabilityId,
+        skippedPlayerIds,
+        locationId: availability.locationId
+      });
+      return;
+    }
+
     const status = mergedPlayers.length >= REQUIRED_DOUBLES_PLAYERS ? "confirmed" : "forming";
     const meetTime = status === "confirmed" ? new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000).toISOString() : undefined;
 
@@ -98,7 +149,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       status,
       requiredPlayers: REQUIRED_DOUBLES_PLAYERS,
       playerIds: mergedPlayers,
-      formedFromAvailabilityIds: unique([...(existing?.formedFromAvailabilityIds ?? []), ...activeAvailabilityIds]),
+      formedFromAvailabilityIds: unique([...(existing?.formedFromAvailabilityIds ?? []), ...mergedAvailabilityIds]),
       court: existing?.court ?? null,
       createdAt: existing?.createdAt ?? FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -136,6 +187,8 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       gameId: gameRef.id,
       status,
       playerCount: mergedPlayers.length,
+      skippedPlayerIds,
+      incompatiblePlayerIds,
       locationId: availability.locationId
     });
   });
@@ -199,6 +252,162 @@ export const assignCourt = onCall(async (request) => {
   return { gameId, court };
 });
 
+export const leaveGame = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sign in before leaving a game.");
+  }
+
+  const gameId = typeof request.data?.gameId === "string" ? request.data.gameId : "";
+  if (!gameId) {
+    throw new HttpsError("invalid-argument", "Missing game ID.");
+  }
+
+  const gameRef = db.collection("games").doc(gameId);
+  await db.runTransaction(async (transaction) => {
+    const gameSnapshot = await transaction.get(gameRef);
+    if (!gameSnapshot.exists) {
+      throw new HttpsError("not-found", "Game not found.");
+    }
+
+    const game = gameSnapshot.data() as Game;
+    if (!game.playerIds.includes(uid)) {
+      throw new HttpsError("permission-denied", "Only players in this game can leave it.");
+    }
+
+    if (game.status === "completed") {
+      throw new HttpsError("failed-precondition", "Completed games cannot be changed.");
+    }
+
+    const remainingPlayerIds = game.playerIds.filter((playerId) => playerId !== uid);
+    const status = remainingPlayerIds.length >= REQUIRED_DOUBLES_PLAYERS ? "confirmed" : "forming";
+
+    transaction.update(gameRef, {
+      playerIds: remainingPlayerIds,
+      status,
+      court: status === "confirmed" ? game.court ?? null : null,
+      updatedAt: FieldValue.serverTimestamp()
+    });
+
+    for (const playerId of remainingPlayerIds) {
+      const notificationRef = db.collection("notifications").doc(`${gameRef.id}_playerLeft_${playerId}_${uid}`);
+      transaction.set(
+        notificationRef,
+        {
+          id: notificationRef.id,
+          userId: playerId,
+          gameId: gameRef.id,
+          type: "playerLeft",
+          title: "Player left the game",
+          body: "A player can no longer make it. PaddleUp is looking for a replacement.",
+          read: false,
+          createdAt: FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+    }
+  });
+
+  logger.info("Player left game", { gameId, userId: uid });
+  return { gameId };
+});
+
+export const resetTestData = onCall(async (request) => {
+  assertAdmin(request.auth?.token.email);
+
+  const testUserIds = new Set(["test-player-3", "test-player-4"]);
+  const testUsersSnapshot = await db.collection("users").where("isTestUser", "==", true).get();
+  testUsersSnapshot.docs.forEach((doc) => testUserIds.add(doc.id));
+
+  const deletes: FirebaseFirestore.DocumentReference[] = [];
+  testUsersSnapshot.docs.forEach((doc) => deletes.push(doc.ref));
+
+  const availabilitySnapshot = await db.collection("availability").get();
+  availabilitySnapshot.docs.forEach((doc) => {
+    const availability = doc.data() as Availability;
+    if ((availability.userId && testUserIds.has(availability.userId)) || doc.id.includes("test-player")) {
+      deletes.push(doc.ref);
+    }
+  });
+
+  const gamesSnapshot = await db.collection("games").get();
+  gamesSnapshot.docs.forEach((doc) => {
+    const game = doc.data() as Partial<Game>;
+    if ((game.playerIds ?? []).some((playerId) => testUserIds.has(playerId))) {
+      deletes.push(doc.ref);
+    }
+  });
+
+  const notificationsSnapshot = await db.collection("notifications").get();
+  notificationsSnapshot.docs.forEach((doc) => {
+    const notification = doc.data();
+    if (testUserIds.has(notification.userId) || String(doc.id).includes("test-player")) {
+      deletes.push(doc.ref);
+    }
+  });
+
+  await deleteInBatches(deletes);
+  logger.info("Admin reset test data", { count: deletes.length, admin: request.auth?.token.email });
+  return { deletedCount: deletes.length };
+});
+
+export const updateLocationCourts = onCall(async (request) => {
+  assertAdmin(request.auth?.token.email);
+
+  const locationId = typeof request.data?.locationId === "string" ? request.data.locationId.trim() : "";
+  const rawCourtLabels: unknown[] = Array.isArray(request.data?.courtLabels) ? request.data.courtLabels : [];
+  const courtLabels = rawCourtLabels
+        .filter((court): court is string => typeof court === "string")
+        .map((court) => court.trim())
+        .filter(Boolean);
+
+  if (!locationId) {
+    throw new HttpsError("invalid-argument", "Missing location ID.");
+  }
+
+  if (courtLabels.length === 0 || courtLabels.length > 40) {
+    throw new HttpsError("invalid-argument", "Provide 1 to 40 court labels.");
+  }
+
+  await db.collection("locations").doc(locationId).set(
+    {
+      courtLabels,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+
+  logger.info("Admin updated location courts", { locationId, courtCount: courtLabels.length, admin: request.auth?.token.email });
+  return { locationId, courtLabels };
+});
+
 function unique(values: string[]) {
   return [...new Set(values.filter(Boolean))];
+}
+
+function pairKey(userA: string, userB: string) {
+  return [userA, userB].sort().join("__");
+}
+
+function selectCompatiblePlayers(candidatePlayers: string[], disabledPairs: string[]) {
+  const selectedPlayers: string[] = [];
+  for (const playerId of candidatePlayers) {
+    const compatible = selectedPlayers.every((selectedPlayerId) => !disabledPairs.includes(pairKey(playerId, selectedPlayerId)));
+    if (compatible) selectedPlayers.push(playerId);
+  }
+  return selectedPlayers;
+}
+
+function assertAdmin(email: unknown) {
+  if (typeof email !== "string" || !ADMIN_EMAILS.has(email)) {
+    throw new HttpsError("permission-denied", "Admin access required.");
+  }
+}
+
+async function deleteInBatches(refs: FirebaseFirestore.DocumentReference[]) {
+  for (let index = 0; index < refs.length; index += 450) {
+    const batch = db.batch();
+    refs.slice(index, index + 450).forEach((ref) => batch.delete(ref));
+    await batch.commit();
+  }
 }

@@ -18,19 +18,30 @@ import {
   UserRound
 } from "lucide-react";
 import { currentUserId, games as seedGames, locations, playmates as seedPlaymates, users as seedUsers } from "./data";
-import type { AvailabilityType, Game, Notification, TabKey, User } from "./domain";
-import { auth, googleProvider, initializeAnalytics } from "./firebase";
+import type { Availability, AvailabilityType, Game, Notification, Playmate, TabKey, User } from "./domain";
+import { auth, googleProvider, initializeAnalytics, trackEvent } from "./firebase";
 import {
   assignGameCourt,
+  leaveGame,
   markReadyNow,
+  markNotificationRead,
+  markNotificationsRead,
+  resetTestData,
+  setPlaymateEnabled,
+  subscribeLocation,
+  subscribeLocationAvailability,
   subscribeLocationGames,
   subscribeLocationUsers,
   subscribeUserNotifications,
+  subscribeUserPlaymates,
+  updateLocationCourts,
   upsertCurrentUser
 } from "./firebaseDb";
 import "./styles.css";
 
 const locationById = new Map(locations.map((location) => [location.id, location]));
+const defaultCourtOptions = Array.from({ length: 10 }, (_, index) => `Court ${index + 1}`);
+const adminEmails = new Set(["demandgendave@gmail.com"]);
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
@@ -67,15 +78,24 @@ function userFromFirebase(firebaseUser: FirebaseUser, locationId: string): User 
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("home");
   const [playerTab, setPlayerTab] = useState<"playmates" | "community">("playmates");
+  const [playerSearch, setPlayerSearch] = useState("");
   const [availabilityMode, setAvailabilityMode] = useState<AvailabilityType>("readyNow");
   const [duration, setDuration] = useState(60);
-  const [playmateState, setPlaymateState] = useState(seedPlaymates);
-  const [joinedGameIds, setJoinedGameIds] = useState<string[]>([]);
+  const [playmateState, setPlaymateState] = useState<Playmate[]>(seedPlaymates);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [firebaseStatus, setFirebaseStatus] = useState("Firebase connected. Sign in to write live availability.");
+  const [firebaseStatus, setFirebaseStatus] = useState("Sign in to save availability and see live games.");
   const [liveUsers, setLiveUsers] = useState<User[]>([]);
   const [liveGames, setLiveGames] = useState<Game[]>([]);
+  const [liveAvailability, setLiveAvailability] = useState<Availability[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [courtPickerGame, setCourtPickerGame] = useState<Game | null>(null);
+  const [courtChoice, setCourtChoice] = useState(defaultCourtOptions[0]);
+  const [customCourt, setCustomCourt] = useState("");
+  const [assigningCourt, setAssigningCourt] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [leavingGameId, setLeavingGameId] = useState<string | null>(null);
+  const [activeLocation, setActiveLocation] = useState(locations[0]);
+  const [adminBusy, setAdminBusy] = useState(false);
 
   useEffect(() => {
     initializeAnalytics();
@@ -83,15 +103,27 @@ function App() {
       setFirebaseUser(user);
       if (user) {
         upsertCurrentUser(user, locations[0].id)
-          .then(() => setFirebaseStatus("Signed in. Your PaddleUp profile is live."))
+          .then(() => setFirebaseStatus(`Signed in. Ready to match at ${locations[0].name}.`))
           .catch((error: Error) => setFirebaseStatus(`Signed in, but profile save failed: ${error.message}`));
       } else {
-        setFirebaseStatus("Firebase connected. Sign in to write live availability.");
+        setFirebaseStatus("Sign in to save availability and see live games.");
       }
     });
   }, []);
 
-  const activeLocation = locations[0];
+  useEffect(() => {
+    if (!firebaseUser) {
+      setActiveLocation(locations[0]);
+      return undefined;
+    }
+
+    return subscribeLocation(
+      locations[0].id,
+      (location) => setActiveLocation({ ...locations[0], ...location }),
+      (error) => setFirebaseStatus(`Location read failed: ${error.message}`)
+    );
+  }, [firebaseUser]);
+
   useEffect(() => {
     if (!firebaseUser) {
       setLiveUsers([]);
@@ -102,6 +134,19 @@ function App() {
       activeLocation.id,
       setLiveUsers,
       (error) => setFirebaseStatus(`Players read failed: ${error.message}`)
+    );
+  }, [activeLocation.id, firebaseUser]);
+
+  useEffect(() => {
+    if (!firebaseUser) {
+      setLiveAvailability([]);
+      return undefined;
+    }
+
+    return subscribeLocationAvailability(
+      activeLocation.id,
+      setLiveAvailability,
+      (error) => setFirebaseStatus(`Availability read failed: ${error.message}`)
     );
   }, [activeLocation.id, firebaseUser]);
 
@@ -131,8 +176,24 @@ function App() {
     );
   }, [firebaseUser]);
 
+  useEffect(() => {
+    if (!firebaseUser) {
+      setPlaymateState(seedPlaymates);
+      return undefined;
+    }
+
+    return subscribeUserPlaymates(
+      firebaseUser.uid,
+      setPlaymateState,
+      (error) => setFirebaseStatus(`Playmates read failed: ${error.message}`)
+    );
+  }, [firebaseUser]);
+
   const allUsers = useMemo(() => {
-    const userMap = new Map(seedUsers.map((user) => [user.uid, user]));
+    const userMap = new Map<string, User>();
+    if (!firebaseUser) {
+      seedUsers.forEach((user) => userMap.set(user.uid, user));
+    }
     liveUsers.forEach((user) => userMap.set(user.uid, user));
     if (firebaseUser) userMap.set(firebaseUser.uid, userMap.get(firebaseUser.uid) || userFromFirebase(firebaseUser, activeLocation.id));
     return Array.from(userMap.values());
@@ -140,25 +201,142 @@ function App() {
 
   const userById = useMemo(() => new Map(allUsers.map((user) => [user.uid, user])), [allUsers]);
   const activeUserId = firebaseUser?.uid || currentUserId;
-  const currentUser = userById.get(activeUserId) || seedUsers[0];
-  const playmateIds = new Set(playmateState.filter((p) => p.enabled).map((p) => p.playmateId));
-  const visiblePlayers =
-    playerTab === "playmates"
-      ? allUsers.filter((user) => playmateIds.has(user.uid) && user.uid !== activeUserId)
-      : allUsers.filter((user) => user.uid !== activeUserId);
+  const playmateIds = useMemo(() => {
+    if (!firebaseUser) return new Set(playmateState.filter((p) => p.enabled).map((p) => p.playmateId));
+    const disabledPlaymateIds = new Set(playmateState.filter((p) => !p.enabled).map((p) => p.playmateId));
+    return new Set(allUsers.filter((user) => user.uid !== activeUserId && !disabledPlaymateIds.has(user.uid)).map((user) => user.uid));
+  }, [activeUserId, allUsers, firebaseUser, playmateState]);
+  const visiblePlayers = useMemo(() => {
+    const search = playerSearch.trim().toLowerCase();
+    return allUsers
+      .filter((user) => user.uid !== activeUserId)
+      .filter((user) => playerTab === "community" || playmateIds.has(user.uid))
+      .filter((user) => {
+        if (!search) return true;
+        return `${user.firstName} ${user.lastName} ${user.email}`.toLowerCase().includes(search);
+      });
+  }, [activeUserId, allUsers, playmateIds, playerSearch, playerTab]);
 
   const displayGames = useMemo(
     () => {
-      const sourceGames = liveGames.length > 0 ? liveGames : seedGames;
-      return sourceGames.map((game) => ({
-        ...game,
-        playerIds: joinedGameIds.includes(game.id) && !game.playerIds.includes(activeUserId) ? [...game.playerIds, activeUserId] : game.playerIds
-      }));
+      return firebaseUser ? liveGames : seedGames;
     },
-    [activeUserId, joinedGameIds, liveGames]
+    [firebaseUser, liveGames]
   );
   const nextGame = displayGames.find((game) => game.status === "confirmed" && game.playerIds.includes(activeUserId));
   const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
+  const courtOptions = activeLocation.courtLabels?.length ? activeLocation.courtLabels : defaultCourtOptions;
+  const selectedCourt = courtChoice === "Other" ? customCourt.trim() : courtChoice;
+  const isAdmin = Boolean(firebaseUser?.email && adminEmails.has(firebaseUser.email));
+  const activeAvailabilityByUserId = useMemo(() => {
+    const now = Date.now();
+    return new Map(
+      liveAvailability
+        .filter((availability) => !availability.expiresAt || new Date(availability.expiresAt).getTime() > now)
+        .map((availability) => [availability.userId, availability])
+    );
+  }, [liveAvailability]);
+
+  function openCourtPicker(game: Game) {
+    setCourtPickerGame(game);
+    if (game.court && courtOptions.includes(game.court)) {
+      setCourtChoice(game.court);
+      setCustomCourt("");
+      return;
+    }
+
+    setCourtChoice(game.court ? "Other" : courtOptions[0]);
+    setCustomCourt(game.court || "");
+  }
+
+  function closeCourtPicker() {
+    if (!assigningCourt) setCourtPickerGame(null);
+  }
+
+  function assignSelectedCourt() {
+    if (!courtPickerGame) return;
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then you can assign a court.");
+      return;
+    }
+    if (!selectedCourt) {
+      setFirebaseStatus("Choose a court before assigning it.");
+      return;
+    }
+
+    setAssigningCourt(true);
+    assignGameCourt(courtPickerGame.id, selectedCourt)
+      .then(() => {
+        setFirebaseStatus(`${selectedCourt} assigned. Players have been notified.`);
+        setCourtPickerGame(null);
+      })
+      .catch((error: Error) => setFirebaseStatus(`Court assignment failed: ${error.message}`))
+      .finally(() => setAssigningCourt(false));
+  }
+
+  function leaveSelectedGame(gameId: string) {
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then you can leave a game.");
+      return;
+    }
+
+    setLeavingGameId(gameId);
+    leaveGame(gameId)
+      .then(() => {
+        trackEvent("game_left", { gameId });
+        setFirebaseStatus("You left the game. Other players have been notified.");
+      })
+      .catch((error: Error) => setFirebaseStatus(`Leaving game failed: ${error.message}`))
+      .finally(() => setLeavingGameId(null));
+  }
+
+  function togglePlaymate(uid: string) {
+    const enabled = !playmateIds.has(uid);
+    setPlaymateState((records) => {
+      const existing = records.find((record) => record.playmateId === uid);
+      if (existing) {
+        return records.map((record) => (record.playmateId === uid ? { ...record, enabled } : record));
+      }
+      return [...records, { userId: activeUserId, playmateId: uid, enabled }];
+    });
+
+    if (!firebaseUser) return;
+
+    setPlaymateEnabled(firebaseUser.uid, uid, enabled)
+      .then(() => setFirebaseStatus(enabled ? "Player added back to your playmates." : "Player removed from your playmates."))
+      .catch((error: Error) => setFirebaseStatus(`Playmate update failed: ${error.message}`));
+  }
+
+  function markOneNotificationRead(notificationId: string) {
+    markNotificationRead(notificationId).catch((error: Error) => setFirebaseStatus(`Notification update failed: ${error.message}`));
+  }
+
+  function markAllNotificationsRead() {
+    const unreadIds = notifications.filter((notification) => !notification.read).map((notification) => notification.id);
+    if (unreadIds.length === 0) return;
+    markNotificationsRead(unreadIds)
+      .then(() => setFirebaseStatus("Notifications marked read."))
+      .catch((error: Error) => setFirebaseStatus(`Notification update failed: ${error.message}`));
+  }
+
+  function runAdminResetTestData() {
+    setAdminBusy(true);
+    resetTestData()
+      .then(({ deletedCount }) => setFirebaseStatus(`Admin reset complete. Deleted ${deletedCount} test records.`))
+      .catch((error: Error) => setFirebaseStatus(`Admin reset failed: ${error.message}`))
+      .finally(() => setAdminBusy(false));
+  }
+
+  function saveAdminCourtDefaults() {
+    setAdminBusy(true);
+    updateLocationCourts(activeLocation.id, defaultCourtOptions)
+      .then(({ courtLabels }) => {
+        setActiveLocation((location) => ({ ...location, courtLabels }));
+        setFirebaseStatus(`Admin saved ${courtLabels.length} court labels.`);
+      })
+      .catch((error: Error) => setFirebaseStatus(`Court config failed: ${error.message}`))
+      .finally(() => setAdminBusy(false));
+  }
 
   const nav = [
     { key: "home" as const, label: "Home", icon: Home },
@@ -170,17 +348,12 @@ function App() {
   return (
     <main className="app-shell">
       <div className="phone-frame">
-        <div className="status-bar">
-          <span>9:41</span>
-          <span className="system-icons">5G  84%</span>
-        </div>
-
         <header className="top-bar">
           <div>
             <p className="location-kicker"><MapPin size={13} /> {activeLocation.name}</p>
             <h1>{activeTab === "home" ? "PaddleUp" : nav.find((item) => item.key === activeTab)?.label}</h1>
           </div>
-          <button className="icon-button notification-button" aria-label="Notifications">
+          <button className="icon-button notification-button" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}>
             <Bell size={20} />
             {unreadNotificationCount > 0 && <span>{unreadNotificationCount}</span>}
           </button>
@@ -203,43 +376,35 @@ function App() {
               games={displayGames}
               userById={userById}
               notifications={notifications}
-              onJoin={(gameId) => setJoinedGameIds((ids) => (ids.includes(gameId) ? ids : [...ids, gameId]))}
               onSetTab={setActiveTab}
               onMode={setAvailabilityMode}
+              onReadNotification={markOneNotificationRead}
             />
           )}
           {activeTab === "players" && (
             <PlayersScreen
               playerTab={playerTab}
               setPlayerTab={setPlayerTab}
+              search={playerSearch}
+              setSearch={setPlayerSearch}
               visiblePlayers={visiblePlayers}
               playmateIds={playmateIds}
-              onToggle={(uid) =>
-                setPlaymateState((records) =>
-                  records.map((record) => (record.playmateId === uid ? { ...record, enabled: !record.enabled } : record))
-                )
-              }
+              availabilityByUserId={activeAvailabilityByUserId}
+              onToggle={togglePlaymate}
             />
           )}
           {activeTab === "games" && (
             <GamesScreen
               games={displayGames}
               userById={userById}
-              onAssignCourt={(gameId) => {
-                if (!firebaseUser) {
-                  setFirebaseStatus("Sign in first, then you can assign a court.");
-                  return;
-                }
-
-                assignGameCourt(gameId, "Court 4")
-                  .then(() => setFirebaseStatus("Court 4 assigned. Players have been notified."))
-                  .catch((error: Error) => setFirebaseStatus(`Court assignment failed: ${error.message}`));
-              }}
+              activeUserId={activeUserId}
+              leavingGameId={leavingGameId}
+              onAssignCourt={openCourtPicker}
+              onLeaveGame={leaveSelectedGame}
             />
           )}
           {activeTab === "me" && (
             <MeScreen
-              currentUser={currentUser}
               firebaseUser={firebaseUser}
               mode={availabilityMode}
               setMode={setAvailabilityMode}
@@ -251,13 +416,44 @@ function App() {
                   return;
                 }
 
+                trackEvent("ready_now_clicked", { durationMinutes: duration, locationId: activeLocation.id });
                 markReadyNow(firebaseUser.uid, activeLocation.id, duration)
-                  .then(() => setFirebaseStatus(`Ready Now saved for ${duration} minutes at ${activeLocation.name}.`))
+                  .then(() => {
+                    trackEvent("availability_created", { type: "readyNow", durationMinutes: duration, locationId: activeLocation.id });
+                    setFirebaseStatus(`Ready Now saved for ${duration} minutes at ${activeLocation.name}.`);
+                  })
                   .catch((error: Error) => setFirebaseStatus(`Ready Now failed: ${error.message}`));
               }}
+              isAdmin={isAdmin}
+              adminBusy={adminBusy}
+              courtCount={courtOptions.length}
+              onResetTestData={runAdminResetTestData}
+              onSaveCourtDefaults={saveAdminCourtDefaults}
             />
           )}
         </section>
+        {notificationsOpen && (
+          <NotificationSheet
+            notifications={notifications}
+            onClose={() => setNotificationsOpen(false)}
+            onRead={markOneNotificationRead}
+            onReadAll={markAllNotificationsRead}
+          />
+        )}
+        {courtPickerGame && (
+          <CourtPicker
+            game={courtPickerGame}
+            courtOptions={courtOptions}
+            courtChoice={courtChoice}
+            customCourt={customCourt}
+            selectedCourt={selectedCourt}
+            assigning={assigningCourt}
+            onChoice={setCourtChoice}
+            onCustomCourt={setCustomCourt}
+            onClose={closeCourtPicker}
+            onAssign={assignSelectedCourt}
+          />
+        )}
 
         <nav className="bottom-nav">
           {nav.map((item) => {
@@ -289,7 +485,7 @@ function AuthStrip({
   return (
     <section className="auth-strip glass-panel">
       <div>
-        <strong>{firebaseUser ? firebaseUser.displayName || firebaseUser.email : "Firebase MVP"}</strong>
+        <strong>{firebaseUser ? firebaseUser.displayName || firebaseUser.email : "PaddleUp Matchmaking"}</strong>
         <span>{status}</span>
       </div>
       <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
@@ -302,19 +498,18 @@ function HomeScreen({
   games,
   userById,
   notifications,
-  onJoin,
   onSetTab,
-  onMode
+  onMode,
+  onReadNotification
 }: {
   nextGame?: Game;
   games: Game[];
   userById: Map<string, User>;
   notifications: Notification[];
-  onJoin: (gameId: string) => void;
   onSetTab: (tab: TabKey) => void;
   onMode: (mode: AvailabilityType) => void;
+  onReadNotification: (notificationId: string) => void;
 }) {
-  const counts = { readyNow: 5, laterToday: 12, tomorrow: 18 };
   const forming = games.filter((game) => game.status === "forming");
 
   return (
@@ -347,7 +542,11 @@ function HomeScreen({
         <section className="stack">
           <SectionTitle title="Latest Updates" />
           {notifications.slice(0, 2).map((notification) => (
-            <article className={`notification-card glass-panel ${notification.read ? "" : "unread"}`} key={notification.id}>
+            <article
+              className={`notification-card glass-panel ${notification.read ? "" : "unread"}`}
+              key={notification.id}
+              onClick={() => onReadNotification(notification.id)}
+            >
               <strong>{notification.title}</strong>
               <span>{notification.body}</span>
             </article>
@@ -355,16 +554,11 @@ function HomeScreen({
         </section>
       )}
 
-      <section className="pulse-grid">
-        <PulseCard label="Ready Now" value={counts.readyNow} tone="green" onClick={() => onSetTab("players")} />
-        <PulseCard label="Later Today" value={counts.laterToday} tone="orange" onClick={() => onSetTab("players")} />
-        <PulseCard label="Tomorrow" value={counts.tomorrow} tone="blue" onClick={() => onSetTab("players")} />
-      </section>
-
       <section className="stack">
         <SectionTitle title="Forming Games" />
+        {forming.length === 0 && <p className="empty-copy">No games forming right now. Start with Ready Now when you want to play.</p>}
         {forming.map((game) => (
-          <FormingGame key={game.id} game={game} userById={userById} onJoin={() => onJoin(game.id)} />
+          <FormingGame key={game.id} game={game} userById={userById} />
         ))}
       </section>
     </div>
@@ -374,14 +568,20 @@ function HomeScreen({
 function PlayersScreen({
   playerTab,
   setPlayerTab,
+  search,
+  setSearch,
   visiblePlayers,
   playmateIds,
+  availabilityByUserId,
   onToggle
 }: {
   playerTab: "playmates" | "community";
   setPlayerTab: (tab: "playmates" | "community") => void;
+  search: string;
+  setSearch: (search: string) => void;
   visiblePlayers: User[];
   playmateIds: Set<string>;
+  availabilityByUserId: Map<string, Availability>;
   onToggle: (uid: string) => void;
 }) {
   return (
@@ -396,18 +596,23 @@ function PlayersScreen({
       />
       <label className="search glass-panel">
         <Search size={17} />
-        <input placeholder={`Search ${playerTab}`} />
+        <input value={search} placeholder={`Search ${playerTab}`} onChange={(event) => setSearch(event.target.value)} />
       </label>
       <div className="list glass-panel">
+        {visiblePlayers.length === 0 && <p className="empty-copy">No players found.</p>}
         {visiblePlayers.map((user) => {
           const isPlaymate = playmateIds.has(user.uid);
+          const availability = availabilityByUserId.get(user.uid);
           return (
             <article className="player-row" key={user.uid}>
               <Avatar user={user} />
               <div>
                 <strong>{user.firstName} {user.lastName}</strong>
-                <span>{locationById.get(user.locationId)?.name}</span>
+                <span>
+                  {availability?.type === "readyNow" ? "Ready Now" : locationById.get(user.locationId)?.name}
+                </span>
               </div>
+              {availability?.type === "readyNow" && <span className="availability-badge">Now</span>}
               <button className="small-icon" onClick={() => onToggle(user.uid)} aria-label={isPlaymate ? "Remove playmate" : "Add playmate"}>
                 {isPlaymate ? <UserMinus size={18} /> : <UserPlus size={18} />}
               </button>
@@ -419,7 +624,21 @@ function PlayersScreen({
   );
 }
 
-function GamesScreen({ games, userById, onAssignCourt }: { games: Game[]; userById: Map<string, User>; onAssignCourt: (gameId: string) => void }) {
+function GamesScreen({
+  games,
+  userById,
+  activeUserId,
+  leavingGameId,
+  onAssignCourt,
+  onLeaveGame
+}: {
+  games: Game[];
+  userById: Map<string, User>;
+  activeUserId: string;
+  leavingGameId: string | null;
+  onAssignCourt: (game: Game) => void;
+  onLeaveGame: (gameId: string) => void;
+}) {
   const forming = games.filter((game) => game.status === "forming");
   const confirmed = games.filter((game) => game.status === "confirmed");
 
@@ -427,41 +646,151 @@ function GamesScreen({ games, userById, onAssignCourt }: { games: Game[]; userBy
     <div className="stack">
       <SectionTitle title="Forming" />
       {forming.length === 0 && <p className="empty-copy">No forming games right now.</p>}
-      {forming.map((game) => <GameCard key={game.id} game={game} userById={userById} onAssignCourt={() => onAssignCourt(game.id)} />)}
+      {forming.map((game) => (
+        <GameCard
+          key={game.id}
+          game={game}
+          userById={userById}
+          activeUserId={activeUserId}
+          isLeaving={leavingGameId === game.id}
+          onAssignCourt={() => onAssignCourt(game)}
+          onLeaveGame={() => onLeaveGame(game.id)}
+        />
+      ))}
       <SectionTitle title="Confirmed" />
       {confirmed.length === 0 && <p className="empty-copy">No confirmed games yet.</p>}
-      {confirmed.map((game) => <GameCard key={game.id} game={game} userById={userById} onAssignCourt={() => onAssignCourt(game.id)} />)}
+      {confirmed.map((game) => (
+        <GameCard
+          key={game.id}
+          game={game}
+          userById={userById}
+          activeUserId={activeUserId}
+          isLeaving={leavingGameId === game.id}
+          onAssignCourt={() => onAssignCourt(game)}
+          onLeaveGame={() => onLeaveGame(game.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function CourtPicker({
+  game,
+  courtOptions,
+  courtChoice,
+  customCourt,
+  selectedCourt,
+  assigning,
+  onChoice,
+  onCustomCourt,
+  onClose,
+  onAssign
+}: {
+  game: Game;
+  courtOptions: string[];
+  courtChoice: string;
+  customCourt: string;
+  selectedCourt: string;
+  assigning: boolean;
+  onChoice: (court: string) => void;
+  onCustomCourt: (court: string) => void;
+  onClose: () => void;
+  onAssign: () => void;
+}) {
+  return (
+    <div className="court-sheet-backdrop" role="presentation" onClick={onClose}>
+      <section className="court-sheet glass-panel" role="dialog" aria-modal="true" aria-label="Assign court" onClick={(event) => event.stopPropagation()}>
+        <SectionTitle title="Assign Court" action="Close" onClick={onClose} />
+        <p>{game.court ? `Current court: ${game.court}` : "Choose where everyone should meet."}</p>
+        <div className="court-grid">
+          {[...courtOptions, "Other"].map((court) => (
+            <button key={court} className={courtChoice === court ? "selected" : ""} onClick={() => onChoice(court)}>
+              {court}
+            </button>
+          ))}
+        </div>
+        {courtChoice === "Other" && (
+          <input
+            className="court-input"
+            value={customCourt}
+            maxLength={40}
+            placeholder="Type court or location"
+            onChange={(event) => onCustomCourt(event.target.value)}
+          />
+        )}
+        <button className="primary-action" disabled={assigning || !selectedCourt} onClick={onAssign}>
+          {assigning ? "Assigning..." : `Assign ${selectedCourt || "Court"}`}
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function NotificationSheet({
+  notifications,
+  onClose,
+  onRead,
+  onReadAll
+}: {
+  notifications: Notification[];
+  onClose: () => void;
+  onRead: (notificationId: string) => void;
+  onReadAll: () => void;
+}) {
+  return (
+    <div className="court-sheet-backdrop" role="presentation" onClick={onClose}>
+      <section className="court-sheet glass-panel" role="dialog" aria-modal="true" aria-label="Notifications" onClick={(event) => event.stopPropagation()}>
+        <SectionTitle title="Notifications" action="Close" onClick={onClose} />
+        {notifications.length === 0 && <p className="empty-copy">No notifications yet.</p>}
+        {notifications.length > 0 && (
+          <button className="ghost-action" onClick={onReadAll}>
+            Mark All Read
+          </button>
+        )}
+        <div className="notification-list">
+          {notifications.map((notification) => (
+            <article
+              className={`notification-card glass-panel ${notification.read ? "" : "unread"}`}
+              key={notification.id}
+              onClick={() => onRead(notification.id)}
+            >
+              <strong>{notification.title}</strong>
+              <span>{notification.body}</span>
+            </article>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
 
 function MeScreen({
-  currentUser,
   firebaseUser,
   mode,
   setMode,
   duration,
   setDuration,
-  onStartMatching
+  onStartMatching,
+  isAdmin,
+  adminBusy,
+  courtCount,
+  onResetTestData,
+  onSaveCourtDefaults
 }: {
-  currentUser: User;
   firebaseUser: FirebaseUser | null;
   mode: AvailabilityType;
   setMode: (mode: AvailabilityType) => void;
   duration: number;
   setDuration: (duration: number) => void;
   onStartMatching: () => void;
+  isAdmin: boolean;
+  adminBusy: boolean;
+  courtCount: number;
+  onResetTestData: () => void;
+  onSaveCourtDefaults: () => void;
 }) {
   return (
     <div className="stack">
-      <section className="profile-strip glass-panel">
-        <Avatar user={currentUser} />
-        <div>
-          <strong>{currentUser.firstName} {currentUser.lastName}</strong>
-          <span>{locationById.get(currentUser.locationId)?.name}</span>
-        </div>
-        <button>Save</button>
-      </section>
       <Segmented
         value={mode}
         options={[
@@ -499,6 +828,18 @@ function MeScreen({
         <ScheduleRow day="Sunday" times={["9:00 AM - 11:30 AM"]} />
         <button className="ghost-action"><Plus size={16} /> Add Another Window</button>
       </section>
+      {isAdmin && (
+        <section className="glass-panel admin-panel">
+          <SectionTitle title="Admin" />
+          <p>Blackhawk courts configured: {courtCount}</p>
+          <button className="ghost-action" disabled={adminBusy} onClick={onSaveCourtDefaults}>
+            Save Blackhawk Court 1-10 Defaults
+          </button>
+          <button className="danger-action" disabled={adminBusy} onClick={onResetTestData}>
+            Reset Test Data
+          </button>
+        </section>
+      )}
     </div>
   );
 }
@@ -512,10 +853,27 @@ function SectionTitle({ title, action, onClick }: { title: string; action?: stri
   );
 }
 
-function GameCard({ game, userById, compact, onAssignCourt }: { game: Game; userById: Map<string, User>; compact?: boolean; onAssignCourt?: () => void }) {
+function GameCard({
+  game,
+  userById,
+  compact,
+  activeUserId,
+  isLeaving,
+  onAssignCourt,
+  onLeaveGame
+}: {
+  game: Game;
+  userById: Map<string, User>;
+  compact?: boolean;
+  activeUserId?: string;
+  isLeaving?: boolean;
+  onAssignCourt?: () => void;
+  onLeaveGame?: () => void;
+}) {
   const location = locationById.get(game.locationId)!;
   const players = game.playerIds.map((id) => userById.get(id)!).filter(Boolean);
   const missing = game.requiredPlayers - game.playerIds.length;
+  const canLeave = Boolean(activeUserId && game.playerIds.includes(activeUserId) && onLeaveGame);
 
   return (
     <article className={`game-card glass-panel ${game.status}`}>
@@ -528,11 +886,16 @@ function GameCard({ game, userById, compact, onAssignCourt }: { game: Game; user
       </div>
       <AvatarStack users={players} missing={missing} />
       {!compact && <p className="need-copy">{missing > 0 ? `Need ${missing} more` : "Players confirmed"}</p>}
+      {!compact && canLeave && (
+        <button className="danger-action" disabled={isLeaving} onClick={onLeaveGame}>
+          {isLeaving ? "Leaving..." : "I Can't Make It"}
+        </button>
+      )}
     </article>
   );
 }
 
-function FormingGame({ game, userById, onJoin }: { game: Game; userById: Map<string, User>; onJoin: () => void }) {
+function FormingGame({ game, userById }: { game: Game; userById: Map<string, User> }) {
   const missing = game.requiredPlayers - game.playerIds.length;
   return (
     <article className="forming-row glass-panel">
@@ -541,18 +904,7 @@ function FormingGame({ game, userById, onJoin }: { game: Game; userById: Map<str
         <span>{game.playerIds.length}/{game.requiredPlayers} players · Need {missing}</span>
       </div>
       <AvatarStack users={game.playerIds.map((id) => userById.get(id)!).filter(Boolean)} missing={missing} />
-      <button onClick={onJoin}>Join</button>
     </article>
-  );
-}
-
-function PulseCard({ label, value, tone, onClick }: { label: string; value: number; tone: string; onClick: () => void }) {
-  return (
-    <button className={`pulse-card ${tone}`} onClick={onClick}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>players</small>
-    </button>
   );
 }
 
@@ -598,7 +950,13 @@ function ScheduleRow({ day, times }: { day: string; times: string[] }) {
 
 createRoot(document.getElementById("root")!).render(<App />);
 
-if ("serviceWorker" in navigator) {
+if (import.meta.env.DEV && "serviceWorker" in navigator) {
+  navigator.serviceWorker.getRegistrations().then((registrations) => {
+    registrations.forEach((registration) => registration.unregister());
+  });
+}
+
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => undefined);
   });

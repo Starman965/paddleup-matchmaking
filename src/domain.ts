@@ -4,6 +4,7 @@ export type Location = {
   id: string;
   name: string;
   type: LocationType;
+  courtLabels?: string[];
 };
 
 export type User = {

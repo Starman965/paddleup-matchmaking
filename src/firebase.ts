@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAnalytics, isSupported as analyticsIsSupported } from "firebase/analytics";
+import { getAnalytics, isSupported as analyticsIsSupported, logEvent } from "firebase/analytics";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
@@ -26,6 +26,16 @@ export function initializeAnalytics() {
   analyticsIsSupported()
     .then((supported) => {
       if (supported) getAnalytics(app);
+    })
+    .catch(() => undefined);
+}
+
+export function trackEvent(name: string, params?: Record<string, string | number | boolean>) {
+  if (typeof window === "undefined") return;
+
+  analyticsIsSupported()
+    .then((supported) => {
+      if (supported) logEvent(getAnalytics(app), name, params);
     })
     .catch(() => undefined);
 }

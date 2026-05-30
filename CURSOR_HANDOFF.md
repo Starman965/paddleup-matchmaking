@@ -510,6 +510,7 @@ Before inviting real users, create a small admin cleanup script or manually rese
 
 9. No admin tools.
    - Need ability to clean test data, view games, maybe seed users, and inspect matching state.
+   - Admin should eventually configure location settings, including court labels/counts. Blackhawk currently has 10 courts.
 
 10. No analytics events beyond Firebase Analytics initialization.
    - Need product metrics around Ready Now, time to game formation, confirmed games, court assignment, and weekly active users.
@@ -550,10 +551,11 @@ Firestore supports `array-contains`, but watch index requirements.
 Replace hard-coded Court 4 with:
 
 - simple bottom sheet/modal
-- choices like Court 1-12 plus "Other"
+- choices like Court 1-10 plus "Other" for Blackhawk
 - call `assignGameCourt(gameId, selectedCourt)`
 
 Keep game writes backend-owned.
+Later admin should make court options configurable per `locationId` rather than baking court counts into the client.
 
 ### 4. Mark Notifications Read
 
