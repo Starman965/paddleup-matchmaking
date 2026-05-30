@@ -531,6 +531,19 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-size: 12px;
   font-weight: 850;
 }
+.avatar-edit-button {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+.avatar-edit-button:focus-visible {
+  outline: 2px solid var(--pkl-yellow);
+  outline-offset: 3px;
+}
 
 .photo-editor {
   padding: 14px;
@@ -619,6 +632,9 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   gap: 9px;
   margin-top: 15px;
 }
+.duration-grid.compact {
+  margin-top: 12px;
+}
 .duration-grid button {
   min-height: 64px;
   border-radius: 19px;
@@ -627,10 +643,24 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-size: 20px;
   font-weight: 900;
 }
+.duration-grid.compact button {
+  min-height: 52px;
+  font-size: 18px;
+}
 .duration-grid button span { display: block; font-size: 11px; color: var(--pkl-muted); }
 .duration-grid button.selected { color: #111827; background: var(--pkl-yellow); }
 .duration-grid button.selected span { color: rgba(17,24,39,0.72); }
 .primary-action { width: 100%; margin-top: 14px; }
+.preference-panel {
+  padding: 14px;
+}
+.preference-panel p {
+  margin: 10px 2px 0;
+  color: var(--pkl-muted);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+}
 .match-feedback {
   padding: 14px;
   box-shadow: 0 12px 34px rgba(255, 216, 61, 0.08), inset 0 0 0 1px rgba(255, 216, 61, 0.22);
@@ -687,28 +717,6 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-weight: 750;
 }
 
-.time-window { padding: 14px; }
-.time-field {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 9px;
-  min-height: 48px;
-  padding: 0 12px;
-  margin-top: 10px;
-  border-radius: 16px;
-  background: rgba(255,255,255,0.08);
-}
-.time-field span { color: var(--pkl-muted); font-size: 12px; font-weight: 800; }
-.time-field input {
-  border: 0;
-  outline: 0;
-  color: var(--pkl-text);
-  background: transparent;
-  font-size: 15px;
-  font-weight: 850;
-  text-align: right;
-}
 .ghost-action {
   width: 100%;
   display: inline-flex;

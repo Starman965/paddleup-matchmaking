@@ -209,6 +209,7 @@ function App() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [matchFeedback, setMatchFeedback] = useState<MatchFeedback | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
+  const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => {
@@ -695,6 +696,7 @@ function App() {
       .then(() => {
         trackEvent("profile_photo_uploaded", { locationId: activeLocation.id });
         setFirebaseStatus("Profile photo updated.");
+        setPhotoEditorOpen(false);
       })
       .catch((error: Error) => {
         setFirebaseStatus(`Profile photo upload failed: ${error.message}`);
@@ -720,7 +722,7 @@ function App() {
     <main className="app-shell">
       <div className="phone-frame">
         <header className="top-bar">
-          <button className={`identity-button ${firebaseUser ? "" : "signed-out"}`} onClick={firebaseUser ? () => setActiveTab("me") : signIn}>
+          <button className={`identity-button ${firebaseUser ? "" : "signed-out"}`} onClick={firebaseUser ? () => setPhotoEditorOpen(true) : signIn}>
             {firebaseUser ? <Avatar user={currentUser} /> : "Sign In"}
           </button>
           <div>
@@ -777,33 +779,27 @@ function App() {
               firebaseUser={firebaseUser}
               onSignIn={signIn}
               onSignOut={() => signOut(auth)}
-              mode={availabilityMode}
-              setMode={setAvailabilityMode}
               duration={duration}
               setDuration={setDuration}
-              laterTodayStart={laterTodayStart}
-              setLaterTodayStart={setLaterTodayStart}
-              laterTodayEnd={laterTodayEnd}
-              setLaterTodayEnd={setLaterTodayEnd}
-              tomorrowStart={tomorrowStart}
-              setTomorrowStart={setTomorrowStart}
-              tomorrowEnd={tomorrowEnd}
-              setTomorrowEnd={setTomorrowEnd}
-              onStartMatching={startReadyNowMatching}
-              matchFeedback={matchFeedback}
               isAdmin={isAdmin}
               adminBusy={adminBusy}
               courtCount={courtOptions.length}
               onResetTestData={runAdminResetTestData}
               onSaveCourtDefaults={saveAdminCourtDefaults}
-              onSaveWindow={saveWindowAvailability}
               presence={currentPresence}
               onTogglePresence={togglePresence}
-              onSaveProfilePhoto={saveProfilePhoto}
-              photoUploading={photoUploading}
+              onEditPhoto={() => setPhotoEditorOpen(true)}
             />
           )}
         </section>
+        {photoEditorOpen && firebaseUser && (
+          <PhotoEditorSheet
+            user={currentUser}
+            uploading={photoUploading}
+            onSave={saveProfilePhoto}
+            onClose={() => setPhotoEditorOpen(false)}
+          />
+        )}
         {notificationsOpen && (
           <NotificationSheet
             notifications={notifications}
@@ -1143,117 +1139,82 @@ function NotificationSheet({
   );
 }
 
+function PhotoEditorSheet({
+  user,
+  uploading,
+  onSave,
+  onClose
+}: {
+  user: User;
+  uploading: boolean;
+  onSave: (photo: Blob) => Promise<void>;
+  onClose: () => void;
+}) {
+  return (
+    <div className="court-sheet-backdrop" role="presentation" onClick={onClose}>
+      <section className="court-sheet glass-panel" role="dialog" aria-modal="true" aria-label="Profile photo" onClick={(event) => event.stopPropagation()}>
+        <SectionTitle title="Profile Photo" action="Close" onClick={onClose} />
+        <ProfilePhotoEditor user={user} uploading={uploading} onSave={onSave} />
+      </section>
+    </div>
+  );
+}
+
 function MeScreen({
   currentUser,
   firebaseUser,
   onSignIn,
   onSignOut,
-  mode,
-  setMode,
   duration,
   setDuration,
-  laterTodayStart,
-  setLaterTodayStart,
-  laterTodayEnd,
-  setLaterTodayEnd,
-  tomorrowStart,
-  setTomorrowStart,
-  tomorrowEnd,
-  setTomorrowEnd,
-  onStartMatching,
-  matchFeedback,
   isAdmin,
   adminBusy,
   courtCount,
   onResetTestData,
   onSaveCourtDefaults,
-  onSaveWindow,
   presence,
   onTogglePresence,
-  onSaveProfilePhoto,
-  photoUploading
+  onEditPhoto
 }: {
   currentUser: User;
   firebaseUser: FirebaseUser | null;
   onSignIn: () => void;
   onSignOut: () => void;
-  mode: AvailabilityType;
-  setMode: (mode: AvailabilityType) => void;
   duration: number;
   setDuration: (duration: number) => void;
-  laterTodayStart: string;
-  setLaterTodayStart: (time: string) => void;
-  laterTodayEnd: string;
-  setLaterTodayEnd: (time: string) => void;
-  tomorrowStart: string;
-  setTomorrowStart: (time: string) => void;
-  tomorrowEnd: string;
-  setTomorrowEnd: (time: string) => void;
-  onStartMatching: () => void;
-  matchFeedback: MatchFeedback | null;
   isAdmin: boolean;
   adminBusy: boolean;
   courtCount: number;
   onResetTestData: () => void;
   onSaveCourtDefaults: () => void;
-  onSaveWindow: (type: "laterToday" | "tomorrow", startTime: string, endTime: string) => void;
   presence: UserPresence;
   onTogglePresence: () => void;
-  onSaveProfilePhoto: (photo: Blob) => Promise<void>;
-  photoUploading: boolean;
+  onEditPhoto: () => void;
 }) {
-  const scheduledType = mode === "tomorrow" ? "tomorrow" : "laterToday";
-  const scheduledStart = scheduledType === "tomorrow" ? tomorrowStart : laterTodayStart;
-  const scheduledEnd = scheduledType === "tomorrow" ? tomorrowEnd : laterTodayEnd;
-  const setScheduledStart = scheduledType === "tomorrow" ? setTomorrowStart : setLaterTodayStart;
-  const setScheduledEnd = scheduledType === "tomorrow" ? setTomorrowEnd : setLaterTodayEnd;
-
   return (
     <div className="stack">
       <StatusCard presence={presence} onTogglePresence={onTogglePresence} />
       <section className="account-panel glass-panel">
-        <Avatar user={currentUser} />
+        <button className="avatar-edit-button" onClick={firebaseUser ? onEditPhoto : onSignIn} aria-label="Edit profile photo">
+          <Avatar user={currentUser} />
+        </button>
         <div>
           <strong>{firebaseUser ? `${currentUser.firstName} ${currentUser.lastName}` : "PaddleUp Matchmaking"}</strong>
-          <span>{firebaseUser ? currentUser.email : "Sign in to save availability and matches."}</span>
+          <span>{firebaseUser ? "Tap your photo to update it." : "Sign in to save availability and matches."}</span>
         </div>
         <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
       </section>
-      {firebaseUser && <ProfilePhotoEditor user={currentUser} uploading={photoUploading} onSave={onSaveProfilePhoto} />}
-      <Segmented
-        value={mode}
-        options={[
-          ["readyNow", "Ready Now"],
-          ["laterToday", "Today"],
-          ["tomorrow", "Tomorrow"]
-        ]}
-        onChange={(value) => setMode(value as AvailabilityType)}
-      />
-      {mode === "readyNow" ? (
-        <section className="glass-panel">
-          <SectionTitle title="Availability Expires" />
-          <div className="duration-grid">
-            {[30, 60, 90, 120].map((minutes) => (
-              <button key={minutes} className={duration === minutes ? "selected" : ""} onClick={() => setDuration(minutes)}>
-                {minutes}<span>min</span>
-              </button>
-            ))}
-          </div>
-          <button className="primary-action" onClick={onStartMatching}>
-            {firebaseUser ? "Start Matching" : "Sign In To Match"}
-          </button>
-        </section>
-      ) : (
-        <section className="glass-panel time-window">
-          <SectionTitle title={mode === "laterToday" ? "Later Today" : "Tomorrow"} />
-          <TimeInput label="Start" value={scheduledStart} onChange={setScheduledStart} />
-          <TimeInput label="End" value={scheduledEnd} onChange={setScheduledEnd} />
-          <button className="primary-action" onClick={() => onSaveWindow(scheduledType, scheduledStart, scheduledEnd)}>
-            {firebaseUser ? "Save Availability" : "Sign In To Save"}
-          </button>
-        </section>
-      )}
-      {matchFeedback && <MatchFeedbackCard feedback={matchFeedback} />}
+      <section className="glass-panel preference-panel">
+        <SectionTitle title="Ready Now Duration" />
+        <p>Used when you tap I Want to Play or Go Online from Home.</p>
+        <div className="duration-grid compact">
+          {[30, 60, 90, 120].map((minutes) => (
+            <button key={minutes} className={duration === minutes ? "selected" : ""} onClick={() => setDuration(minutes)}>
+              {minutes}<span>min</span>
+            </button>
+          ))}
+        </div>
+      </section>
       {isAdmin && (
         <section className="glass-panel admin-panel">
           <SectionTitle title="Admin" />
@@ -1484,15 +1445,6 @@ function AvatarStack({ users, missing }: { users: User[]; missing: number }) {
       {users.map((user) => <Avatar key={user.uid} user={user} />)}
       {Array.from({ length: Math.max(0, missing) }).map((_, index) => <div className="avatar empty" key={index}><Plus size={14} /></div>)}
     </div>
-  );
-}
-
-function TimeInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return (
-    <label className="time-field">
-      <span>{label}</span>
-      <input type="time" value={value} onChange={(event) => onChange(event.target.value)} />
-    </label>
   );
 }
 
