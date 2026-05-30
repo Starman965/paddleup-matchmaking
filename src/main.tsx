@@ -348,6 +348,7 @@ function App() {
   const userById = useMemo(() => new Map(allUsers.map((user) => [user.uid, user])), [allUsers]);
   const activeUserId = firebaseUser?.uid || currentUserId;
   const currentUser = userById.get(activeUserId) || (firebaseUser ? userFromFirebase(firebaseUser, activeLocation.id) : seedUsers[0]);
+  const onlinePlayerCount = allUsers.filter((user) => user.presence !== "offline").length;
   const playmateIds = useMemo(() => {
     if (!firebaseUser) return new Set(playmateState.filter((p) => p.enabled).map((p) => p.playmateId));
     const disabledPlaymateIds = new Set(playmateState.filter((p) => !p.enabled).map((p) => p.playmateId));
@@ -745,6 +746,7 @@ function App() {
             <p className="location-kicker"><MapPin size={13} /> {activeLocation.name}</p>
             <h1>{activeTab === "home" ? "PaddleUp" : nav.find((item) => item.key === activeTab)?.label}</h1>
           </div>
+          <OnlinePill count={onlinePlayerCount} />
         </header>
 
         <section className="screen">
@@ -1256,6 +1258,16 @@ function SectionTitle({ title, action, onClick }: { title: string; action?: stri
     <div className="section-title">
       <h2>{title}</h2>
       {action && <button onClick={onClick}>{action}<ChevronRight size={16} /></button>}
+    </div>
+  );
+}
+
+function OnlinePill({ count }: { count: number }) {
+  return (
+    <div className="online-pill" aria-label={`${count} online players`}>
+      <span />
+      <strong>{count}</strong>
+      <em>online</em>
     </div>
   );
 }
