@@ -13,6 +13,7 @@ export type User = {
   email: string;
   photoUrl: string;
   locationId: string;
+  isTestUser?: boolean;
 };
 
 export type Playmate = {
@@ -44,7 +45,20 @@ export type Game = {
   requiredPlayers: 2 | 4;
   playerIds: string[];
   startsAt: string;
-  court?: string;
+  court?: string | null;
+  meetTime?: string;
+  formedFromAvailabilityIds?: string[];
+};
+
+export type Notification = {
+  id: string;
+  userId: string;
+  gameId: string;
+  type: "formingGame" | "gameConfirmed" | "courtAssigned" | "playerLeft";
+  title: string;
+  body: string;
+  read: boolean;
+  createdAt: string;
 };
 
 export type TabKey = "home" | "players" | "games" | "me";

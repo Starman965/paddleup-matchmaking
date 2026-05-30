@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .firebase/
+functions/lib/
 .DS_Store
 .env
 .env.local

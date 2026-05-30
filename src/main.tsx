@@ -17,14 +17,13 @@ import {
   Users,
   UserRound
 } from "lucide-react";
-import { availabilities, currentUserId, games, locations, playmates as seedPlaymates, users } from "./data";
-import type { AvailabilityType, Game, TabKey, User } from "./domain";
+import { currentUserId, games as seedGames, locations, playmates as seedPlaymates, users as seedUsers } from "./data";
+import type { AvailabilityType, Game, Notification, TabKey, User } from "./domain";
 import { auth, googleProvider, initializeAnalytics } from "./firebase";
-import { markReadyNow, upsertCurrentUser } from "./firebaseDb";
+import { markReadyNow, subscribeLocationGames, subscribeLocationUsers, subscribeUserNotifications, upsertCurrentUser } from "./firebaseDb";
 import "./styles.css";
 
 const locationById = new Map(locations.map((location) => [location.id, location]));
-const userById = new Map(users.map((user) => [user.uid, user]));
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
@@ -32,7 +31,7 @@ function formatTime(value: string) {
 
 function formatDay(value: string) {
   const date = new Date(value);
-  const now = new Date("2026-05-29T09:41:00");
+  const now = new Date();
   if (date.toDateString() === now.toDateString()) return "Today";
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
@@ -41,7 +40,21 @@ function formatDay(value: string) {
 }
 
 function initials(user: User) {
-  return `${user.firstName[0]}${user.lastName[0]}`;
+  const first = user.firstName?.[0] || "P";
+  const last = user.lastName?.[0] || "";
+  return `${first}${last}`;
+}
+
+function userFromFirebase(firebaseUser: FirebaseUser, locationId: string): User {
+  const [firstName = "", ...lastNameParts] = (firebaseUser.displayName || "").trim().split(/\s+/);
+  return {
+    uid: firebaseUser.uid,
+    firstName: firstName || firebaseUser.email?.split("@")[0] || "Player",
+    lastName: lastNameParts.join(" "),
+    email: firebaseUser.email || "",
+    photoUrl: firebaseUser.photoURL || "",
+    locationId
+  };
 }
 
 function App() {
@@ -54,6 +67,9 @@ function App() {
   const [assignedCourts, setAssignedCourts] = useState<Record<string, string>>({ g2: "Court TBD", g3: "Court TBD" });
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [firebaseStatus, setFirebaseStatus] = useState("Firebase connected. Sign in to write live availability.");
+  const [liveUsers, setLiveUsers] = useState<User[]>([]);
+  const [liveGames, setLiveGames] = useState<Game[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
 
   useEffect(() => {
     initializeAnalytics();
@@ -70,20 +86,74 @@ function App() {
   }, []);
 
   const activeLocation = locations[0];
-  const currentUser = userById.get(currentUserId)!;
-  const playmateIds = new Set(playmateState.filter((p) => p.enabled).map((p) => p.playmateId));
-  const visiblePlayers = playerTab === "playmates" ? users.filter((user) => playmateIds.has(user.uid)) : users.filter((user) => user.uid !== currentUserId);
-  const nextGame = games.find((game) => game.status === "confirmed" && game.playerIds.includes(currentUserId));
+  useEffect(() => {
+    if (!firebaseUser) {
+      setLiveUsers([]);
+      return undefined;
+    }
 
-  const liveGames = useMemo(
-    () =>
-      games.map((game) => ({
+    return subscribeLocationUsers(
+      activeLocation.id,
+      setLiveUsers,
+      (error) => setFirebaseStatus(`Players read failed: ${error.message}`)
+    );
+  }, [activeLocation.id, firebaseUser]);
+
+  useEffect(() => {
+    if (!firebaseUser) {
+      setLiveGames([]);
+      return undefined;
+    }
+
+    return subscribeLocationGames(
+      activeLocation.id,
+      setLiveGames,
+      (error) => setFirebaseStatus(`Games read failed: ${error.message}`)
+    );
+  }, [activeLocation.id, firebaseUser]);
+
+  useEffect(() => {
+    if (!firebaseUser) {
+      setNotifications([]);
+      return undefined;
+    }
+
+    return subscribeUserNotifications(
+      firebaseUser.uid,
+      setNotifications,
+      (error) => setFirebaseStatus(`Notifications read failed: ${error.message}`)
+    );
+  }, [firebaseUser]);
+
+  const allUsers = useMemo(() => {
+    const userMap = new Map(seedUsers.map((user) => [user.uid, user]));
+    liveUsers.forEach((user) => userMap.set(user.uid, user));
+    if (firebaseUser) userMap.set(firebaseUser.uid, userMap.get(firebaseUser.uid) || userFromFirebase(firebaseUser, activeLocation.id));
+    return Array.from(userMap.values());
+  }, [activeLocation.id, firebaseUser, liveUsers]);
+
+  const userById = useMemo(() => new Map(allUsers.map((user) => [user.uid, user])), [allUsers]);
+  const activeUserId = firebaseUser?.uid || currentUserId;
+  const currentUser = userById.get(activeUserId) || seedUsers[0];
+  const playmateIds = new Set(playmateState.filter((p) => p.enabled).map((p) => p.playmateId));
+  const visiblePlayers =
+    playerTab === "playmates"
+      ? allUsers.filter((user) => playmateIds.has(user.uid) && user.uid !== activeUserId)
+      : allUsers.filter((user) => user.uid !== activeUserId);
+
+  const displayGames = useMemo(
+    () => {
+      const sourceGames = liveGames.length > 0 ? liveGames : seedGames;
+      return sourceGames.map((game) => ({
         ...game,
-        playerIds: joinedGameIds.includes(game.id) && !game.playerIds.includes(currentUserId) ? [...game.playerIds, currentUserId] : game.playerIds,
+        playerIds: joinedGameIds.includes(game.id) && !game.playerIds.includes(activeUserId) ? [...game.playerIds, activeUserId] : game.playerIds,
         court: assignedCourts[game.id] || game.court
-      })),
-    [assignedCourts, joinedGameIds]
+      }));
+    },
+    [activeUserId, assignedCourts, joinedGameIds, liveGames]
   );
+  const nextGame = displayGames.find((game) => game.status === "confirmed" && game.playerIds.includes(activeUserId));
+  const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
 
   const nav = [
     { key: "home" as const, label: "Home", icon: Home },
@@ -105,7 +175,10 @@ function App() {
             <p className="location-kicker"><MapPin size={13} /> {activeLocation.name}</p>
             <h1>{activeTab === "home" ? "PaddleUp" : nav.find((item) => item.key === activeTab)?.label}</h1>
           </div>
-          <button className="icon-button" aria-label="Notifications"><Bell size={20} /></button>
+          <button className="icon-button notification-button" aria-label="Notifications">
+            <Bell size={20} />
+            {unreadNotificationCount > 0 && <span>{unreadNotificationCount}</span>}
+          </button>
         </header>
 
         <section className="screen">
@@ -122,7 +195,9 @@ function App() {
           {activeTab === "home" && (
             <HomeScreen
               nextGame={nextGame}
-              games={liveGames}
+              games={displayGames}
+              userById={userById}
+              notifications={notifications}
               onJoin={(gameId) => setJoinedGameIds((ids) => (ids.includes(gameId) ? ids : [...ids, gameId]))}
               onSetTab={setActiveTab}
               onMode={setAvailabilityMode}
@@ -143,7 +218,8 @@ function App() {
           )}
           {activeTab === "games" && (
             <GamesScreen
-              games={liveGames}
+              games={displayGames}
+              userById={userById}
               onAssignCourt={(gameId) => setAssignedCourts((courts) => ({ ...courts, [gameId]: courts[gameId] === "Court 4" ? "Court TBD" : "Court 4" }))}
             />
           )}
@@ -210,12 +286,16 @@ function AuthStrip({
 function HomeScreen({
   nextGame,
   games,
+  userById,
+  notifications,
   onJoin,
   onSetTab,
   onMode
 }: {
   nextGame?: Game;
   games: Game[];
+  userById: Map<string, User>;
+  notifications: Notification[];
   onJoin: (gameId: string) => void;
   onSetTab: (tab: TabKey) => void;
   onMode: (mode: AvailabilityType) => void;
@@ -245,7 +325,19 @@ function HomeScreen({
       {nextGame && (
         <section className="glass-panel">
           <SectionTitle title="Next Game" action="View Game" onClick={() => onSetTab("games")} />
-          <GameCard game={nextGame} compact />
+          <GameCard game={nextGame} userById={userById} compact />
+        </section>
+      )}
+
+      {notifications.length > 0 && (
+        <section className="stack">
+          <SectionTitle title="Latest Updates" />
+          {notifications.slice(0, 2).map((notification) => (
+            <article className={`notification-card glass-panel ${notification.read ? "" : "unread"}`} key={notification.id}>
+              <strong>{notification.title}</strong>
+              <span>{notification.body}</span>
+            </article>
+          ))}
         </section>
       )}
 
@@ -258,7 +350,7 @@ function HomeScreen({
       <section className="stack">
         <SectionTitle title="Forming Games" />
         {forming.map((game) => (
-          <FormingGame key={game.id} game={game} onJoin={() => onJoin(game.id)} />
+          <FormingGame key={game.id} game={game} userById={userById} onJoin={() => onJoin(game.id)} />
         ))}
       </section>
     </div>
@@ -313,16 +405,18 @@ function PlayersScreen({
   );
 }
 
-function GamesScreen({ games, onAssignCourt }: { games: Game[]; onAssignCourt: (gameId: string) => void }) {
+function GamesScreen({ games, userById, onAssignCourt }: { games: Game[]; userById: Map<string, User>; onAssignCourt: (gameId: string) => void }) {
   const forming = games.filter((game) => game.status === "forming");
   const confirmed = games.filter((game) => game.status === "confirmed");
 
   return (
     <div className="stack">
       <SectionTitle title="Forming" />
-      {forming.map((game) => <GameCard key={game.id} game={game} onAssignCourt={() => onAssignCourt(game.id)} />)}
+      {forming.length === 0 && <p className="empty-copy">No forming games right now.</p>}
+      {forming.map((game) => <GameCard key={game.id} game={game} userById={userById} onAssignCourt={() => onAssignCourt(game.id)} />)}
       <SectionTitle title="Confirmed" />
-      {confirmed.map((game) => <GameCard key={game.id} game={game} onAssignCourt={() => onAssignCourt(game.id)} />)}
+      {confirmed.length === 0 && <p className="empty-copy">No confirmed games yet.</p>}
+      {confirmed.map((game) => <GameCard key={game.id} game={game} userById={userById} onAssignCourt={() => onAssignCourt(game.id)} />)}
     </div>
   );
 }
@@ -404,7 +498,7 @@ function SectionTitle({ title, action, onClick }: { title: string; action?: stri
   );
 }
 
-function GameCard({ game, compact, onAssignCourt }: { game: Game; compact?: boolean; onAssignCourt?: () => void }) {
+function GameCard({ game, userById, compact, onAssignCourt }: { game: Game; userById: Map<string, User>; compact?: boolean; onAssignCourt?: () => void }) {
   const location = locationById.get(game.locationId)!;
   const players = game.playerIds.map((id) => userById.get(id)!).filter(Boolean);
   const missing = game.requiredPlayers - game.playerIds.length;
@@ -424,7 +518,7 @@ function GameCard({ game, compact, onAssignCourt }: { game: Game; compact?: bool
   );
 }
 
-function FormingGame({ game, onJoin }: { game: Game; onJoin: () => void }) {
+function FormingGame({ game, userById, onJoin }: { game: Game; userById: Map<string, User>; onJoin: () => void }) {
   const missing = game.requiredPlayers - game.playerIds.length;
   return (
     <article className="forming-row glass-panel">
