@@ -30,7 +30,6 @@ import {
   subscribeLocationGames,
   subscribeLocationUsers,
   subscribeUserPlaymates,
-  updateLocationCourts,
   updateGameStartTime,
   uploadProfilePhoto,
   upsertCurrentUser
@@ -617,17 +616,6 @@ function App() {
       .finally(() => setAdminBusy(false));
   }
 
-  function saveAdminCourtDefaults() {
-    setAdminBusy(true);
-    updateLocationCourts(activeLocation.id, defaultCourtOptions)
-      .then(({ courtLabels }) => {
-        setActiveLocation((location) => ({ ...location, courtLabels }));
-        setFirebaseStatus(`Admin saved ${courtLabels.length} court labels.`);
-      })
-      .catch((error: Error) => setFirebaseStatus(`Court config failed: ${error.message}`))
-      .finally(() => setAdminBusy(false));
-  }
-
   function goOnline() {
     if (!firebaseUser) {
       setFirebaseStatus("Sign in first, then you can control your availability.");
@@ -784,9 +772,7 @@ function App() {
               setDuration={setDuration}
               isAdmin={isAdmin}
               adminBusy={adminBusy}
-              courtCount={courtOptions.length}
               onResetTestData={runAdminResetTestData}
-              onSaveCourtDefaults={saveAdminCourtDefaults}
               presence={currentPresence}
               onTogglePresence={togglePresence}
               onEditPhoto={() => setPhotoEditorOpen(true)}
@@ -1120,9 +1106,7 @@ function MeScreen({
   setDuration,
   isAdmin,
   adminBusy,
-  courtCount,
   onResetTestData,
-  onSaveCourtDefaults,
   presence,
   onTogglePresence,
   onEditPhoto
@@ -1135,9 +1119,7 @@ function MeScreen({
   setDuration: (duration: number) => void;
   isAdmin: boolean;
   adminBusy: boolean;
-  courtCount: number;
   onResetTestData: () => void;
-  onSaveCourtDefaults: () => void;
   presence: UserPresence;
   onTogglePresence: () => void;
   onEditPhoto: () => void;
@@ -1169,10 +1151,7 @@ function MeScreen({
       {isAdmin && (
         <section className="glass-panel admin-panel">
           <SectionTitle title="Admin" />
-          <p>Blackhawk courts configured: {courtCount}</p>
-          <button className="ghost-action" disabled={adminBusy} onClick={onSaveCourtDefaults}>
-            Save Blackhawk Court 1-10 Defaults
-          </button>
+          <p>Clear testing activity while keeping real user profiles.</p>
           <button className="danger-action" disabled={adminBusy} onClick={onResetTestData}>
             Clear Test Activity
           </button>
