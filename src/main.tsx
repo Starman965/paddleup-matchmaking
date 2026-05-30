@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { onAuthStateChanged, signInWithPopup, signOut, type User as FirebaseUser } from "firebase/auth";
 import {
-  Bell,
   Calendar,
   ChevronRight,
   Home,
@@ -16,15 +15,13 @@ import {
   UserRound
 } from "lucide-react";
 import { currentUserId, games as seedGames, locations, playmates as seedPlaymates, users as seedUsers } from "./data";
-import type { Availability, AvailabilityType, Game, Notification, Playmate, TabKey, User } from "./domain";
+import type { Availability, AvailabilityType, Game, Playmate, TabKey, User } from "./domain";
 import { auth, googleProvider, initializeAnalytics, trackEvent } from "./firebase";
 import {
   assignGameCourt,
   goOffline,
   leaveGame,
   markReadyNow,
-  markNotificationRead,
-  markNotificationsRead,
   resetTestData,
   saveAvailabilityWindow,
   setPlaymateEnabled,
@@ -32,7 +29,6 @@ import {
   subscribeLocationAvailability,
   subscribeLocationGames,
   subscribeLocationUsers,
-  subscribeUserNotifications,
   subscribeUserPlaymates,
   updateLocationCourts,
   uploadProfilePhoto,
@@ -198,12 +194,10 @@ function App() {
   const [liveUsers, setLiveUsers] = useState<User[]>([]);
   const [liveGames, setLiveGames] = useState<Game[]>([]);
   const [liveAvailability, setLiveAvailability] = useState<Availability[]>([]);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [courtPickerGame, setCourtPickerGame] = useState<Game | null>(null);
   const [courtChoice, setCourtChoice] = useState(defaultCourtOptions[0]);
   const [customCourt, setCustomCourt] = useState("");
   const [assigningCourt, setAssigningCourt] = useState(false);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [leavingGameId, setLeavingGameId] = useState<string | null>(null);
   const [activeLocation, setActiveLocation] = useState(locations[0]);
   const [adminBusy, setAdminBusy] = useState(false);
@@ -285,19 +279,6 @@ function App() {
 
   useEffect(() => {
     if (!firebaseUser) {
-      setNotifications([]);
-      return undefined;
-    }
-
-    return subscribeUserNotifications(
-      firebaseUser.uid,
-      setNotifications,
-      (error) => setFirebaseStatus(`Notifications read failed: ${error.message}`)
-    );
-  }, [firebaseUser]);
-
-  useEffect(() => {
-    if (!firebaseUser) {
       setPlaymateState(seedPlaymates);
       return undefined;
     }
@@ -357,7 +338,6 @@ function App() {
     [myGames]
   );
   const nextGame = displayGames.find((game) => game.status === "confirmed" && game.playerIds.includes(activeUserId));
-  const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
   const courtOptions = activeLocation.courtLabels?.length ? activeLocation.courtLabels : defaultCourtOptions;
   const selectedCourt = courtChoice === "Other" ? customCourt.trim() : courtChoice;
   const isAdmin = Boolean(firebaseUser?.email && adminEmails.has(firebaseUser.email));
@@ -597,18 +577,6 @@ function App() {
       .catch((error: Error) => setFirebaseStatus(`Playmate update failed: ${error.message}`));
   }
 
-  function markOneNotificationRead(notificationId: string) {
-    markNotificationRead(notificationId).catch((error: Error) => setFirebaseStatus(`Notification update failed: ${error.message}`));
-  }
-
-  function markAllNotificationsRead() {
-    const unreadIds = notifications.filter((notification) => !notification.read).map((notification) => notification.id);
-    if (unreadIds.length === 0) return;
-    markNotificationsRead(unreadIds)
-      .then(() => setFirebaseStatus("Notifications marked read."))
-      .catch((error: Error) => setFirebaseStatus(`Notification update failed: ${error.message}`));
-  }
-
   function runAdminResetTestData() {
     setAdminBusy(true);
     resetTestData()
@@ -733,10 +701,6 @@ function App() {
             <p className="location-kicker"><MapPin size={13} /> {activeLocation.name}</p>
             <h1>{activeTab === "home" ? "PaddleUp" : nav.find((item) => item.key === activeTab)?.label}</h1>
           </div>
-          <button className="icon-button notification-button" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}>
-            <Bell size={20} />
-            {unreadNotificationCount > 0 && <span>{unreadNotificationCount}</span>}
-          </button>
         </header>
 
         <section className="screen">
@@ -801,14 +765,6 @@ function App() {
             uploading={photoUploading}
             onSave={saveProfilePhoto}
             onClose={() => setPhotoEditorOpen(false)}
-          />
-        )}
-        {notificationsOpen && (
-          <NotificationSheet
-            notifications={notifications}
-            onClose={() => setNotificationsOpen(false)}
-            onRead={markOneNotificationRead}
-            onReadAll={markAllNotificationsRead}
           />
         )}
         {courtPickerGame && (
@@ -1087,44 +1043,6 @@ function CourtPicker({
         <button className="primary-action" disabled={assigning || !selectedCourt} onClick={onAssign}>
           {assigning ? "Assigning..." : `Assign ${selectedCourt || "Court"}`}
         </button>
-      </section>
-    </div>
-  );
-}
-
-function NotificationSheet({
-  notifications,
-  onClose,
-  onRead,
-  onReadAll
-}: {
-  notifications: Notification[];
-  onClose: () => void;
-  onRead: (notificationId: string) => void;
-  onReadAll: () => void;
-}) {
-  return (
-    <div className="court-sheet-backdrop" role="presentation" onClick={onClose}>
-      <section className="court-sheet glass-panel" role="dialog" aria-modal="true" aria-label="Notifications" onClick={(event) => event.stopPropagation()}>
-        <SectionTitle title="Notifications" action="Close" onClick={onClose} />
-        {notifications.length === 0 && <p className="empty-copy">No notifications yet.</p>}
-        {notifications.length > 0 && (
-          <button className="ghost-action" onClick={onReadAll}>
-            Mark All Read
-          </button>
-        )}
-        <div className="notification-list">
-          {notifications.map((notification) => (
-            <article
-              className={`notification-card glass-panel ${notification.read ? "" : "unread"}`}
-              key={notification.id}
-              onClick={() => onRead(notification.id)}
-            >
-              <strong>{notification.title}</strong>
-              <span>{notification.body}</span>
-            </article>
-          ))}
-        </div>
       </section>
     </div>
   );

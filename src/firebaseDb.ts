@@ -17,7 +17,7 @@ import type { User as FirebaseUser } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { db, functions, storage } from "./firebase";
-import type { Availability, Game, Location, Notification, Playmate, User } from "./domain";
+import type { Availability, Game, Location, Playmate, User } from "./domain";
 
 function timestampToIso(value: unknown) {
   if (!value) return new Date().toISOString();
@@ -94,20 +94,6 @@ function gameFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Game {
     meetTime,
     court: typeof data.court === "string" ? data.court : null,
     formedFromAvailabilityIds: readStringArray(data.formedFromAvailabilityIds)
-  };
-}
-
-function notificationFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Notification {
-  const data = snapshot.data();
-  return {
-    id: readString(data.id, snapshot.id),
-    userId: readString(data.userId),
-    gameId: readString(data.gameId),
-    type: data.type === "gameConfirmed" || data.type === "courtAssigned" || data.type === "playerLeft" ? data.type : "formingGame",
-    title: readString(data.title, "PaddleUp"),
-    body: readString(data.body),
-    read: data.read === true,
-    createdAt: timestampToIso(data.createdAt)
   };
 }
 
@@ -232,31 +218,6 @@ export function subscribeLocationGames(locationId: string, onGames: (games: Game
     (snapshot) => onGames(snapshot.docs.map(gameFromSnapshot)),
     onError
   );
-}
-
-export function subscribeUserNotifications(
-  userId: string,
-  onNotifications: (notifications: Notification[]) => void,
-  onError: (error: Error) => void
-): Unsubscribe {
-  return onSnapshot(
-    query(collection(db, "notifications"), where("userId", "==", userId)),
-    (snapshot) =>
-      onNotifications(
-        snapshot.docs
-          .map(notificationFromSnapshot)
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      ),
-    onError
-  );
-}
-
-export async function markNotificationRead(notificationId: string) {
-  await updateDoc(doc(db, "notifications", notificationId), { read: true });
-}
-
-export async function markNotificationsRead(notificationIds: string[]) {
-  await Promise.all(notificationIds.map(markNotificationRead));
 }
 
 export function subscribeUserPlaymates(
