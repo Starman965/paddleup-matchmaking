@@ -745,14 +745,12 @@ function App() {
               nextGame={nextGame}
               games={displayGames}
               userById={userById}
-              notifications={notifications}
               presence={currentPresence}
               counts={livePulseCounts}
               matchFeedback={matchFeedback}
               onSetTab={setActiveTab}
               onChooseAvailability={chooseHomeAvailability}
               onTogglePresence={togglePresence}
-              onReadNotification={markOneNotificationRead}
             />
           )}
           {activeTab === "players" && (
@@ -848,26 +846,22 @@ function HomeScreen({
   nextGame,
   games,
   userById,
-  notifications,
   presence,
   counts,
   matchFeedback,
   onSetTab,
   onChooseAvailability,
   onTogglePresence,
-  onReadNotification
 }: {
   nextGame?: Game;
   games: Game[];
   userById: Map<string, User>;
-  notifications: Notification[];
   presence: UserPresence;
   counts: ReturnType<typeof pulseCounts>;
   matchFeedback: MatchFeedback | null;
   onSetTab: (tab: TabKey) => void;
   onChooseAvailability: (mode: Exclude<AvailabilityType, "weekend">) => void;
   onTogglePresence: () => void;
-  onReadNotification: (notificationId: string) => void;
 }) {
   const forming = games.filter((game) => game.status === "forming");
   const primaryCta =
@@ -928,21 +922,6 @@ function HomeScreen({
         ))}
       </section>
 
-      {notifications.length > 0 && (
-        <section className="stack">
-          <SectionTitle title="Your Updates" />
-          {notifications.slice(0, 2).map((notification) => (
-            <article
-              className={`notification-card glass-panel ${notification.read ? "" : "unread"}`}
-              key={notification.id}
-              onClick={() => onReadNotification(notification.id)}
-            >
-              <strong>{notification.title}</strong>
-              <span>{notification.body}</span>
-            </article>
-          ))}
-        </section>
-      )}
     </div>
   );
 }
@@ -1415,7 +1394,7 @@ function GameCard({
       {!compact && <p className="need-copy">{missing > 0 ? `Need ${missing} more` : "Players confirmed"}</p>}
       {!compact && canLeave && (
         <button className="danger-action" disabled={isLeaving} onClick={onLeaveGame}>
-          {isLeaving ? "Leaving..." : "I Can't Make It"}
+          {isLeaving ? "Dropping Out..." : "Drop Out"}
         </button>
       )}
     </article>
