@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { onAuthStateChanged, signInWithPopup, signOut, type User as FirebaseUser } from "firebase/auth";
 import {
@@ -35,6 +35,7 @@ import {
   subscribeUserNotifications,
   subscribeUserPlaymates,
   updateLocationCourts,
+  uploadProfilePhoto,
   upsertCurrentUser
 } from "./firebaseDb";
 import "./styles.css";
@@ -118,6 +119,44 @@ function userFromFirebase(firebaseUser: FirebaseUser, locationId: string): User 
   };
 }
 
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Could not load that image."));
+    image.src = src;
+  });
+}
+
+async function cropImageToWebp(src: string, zoom: number) {
+  const image = await loadImage(src);
+  const canvas = document.createElement("canvas");
+  const size = 512;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Could not prepare image crop.");
+
+  canvas.width = size;
+  canvas.height = size;
+
+  const clampedZoom = Math.min(Math.max(zoom, 1), 3);
+  const sourceSize = Math.min(image.naturalWidth, image.naturalHeight) / clampedZoom;
+  const sourceX = (image.naturalWidth - sourceSize) / 2;
+  const sourceY = (image.naturalHeight - sourceSize) / 2;
+
+  context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("Could not export profile photo."));
+      },
+      "image/webp",
+      0.86
+    );
+  });
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("home");
   const [playerTab, setPlayerTab] = useState<"playmates" | "community">("playmates");
@@ -144,6 +183,7 @@ function App() {
   const [activeLocation, setActiveLocation] = useState(locations[0]);
   const [adminBusy, setAdminBusy] = useState(false);
   const [matchFeedback, setMatchFeedback] = useState<MatchFeedback | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
 
   useEffect(() => {
     initializeAnalytics();
@@ -526,6 +566,25 @@ function App() {
       .catch((error: Error) => setFirebaseStatus(`Going offline failed: ${error.message}`));
   }
 
+  function saveProfilePhoto(photo: Blob) {
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then you can update your profile photo.");
+      return Promise.reject(new Error("Sign in first."));
+    }
+
+    setPhotoUploading(true);
+    return uploadProfilePhoto(firebaseUser.uid, photo)
+      .then(() => {
+        trackEvent("profile_photo_uploaded", { locationId: activeLocation.id });
+        setFirebaseStatus("Profile photo updated.");
+      })
+      .catch((error: Error) => {
+        setFirebaseStatus(`Profile photo upload failed: ${error.message}`);
+        throw error;
+      })
+      .finally(() => setPhotoUploading(false));
+  }
+
   function signIn() {
     signInWithPopup(auth, googleProvider).catch((error: Error) => {
       setFirebaseStatus(`Sign-in failed: ${error.message}`);
@@ -597,7 +656,6 @@ function App() {
             <MeScreen
               currentUser={currentUser}
               firebaseUser={firebaseUser}
-              status={firebaseStatus}
               onSignIn={signIn}
               onSignOut={() => signOut(auth)}
               mode={availabilityMode}
@@ -645,6 +703,8 @@ function App() {
               onSaveWindow={saveWindowAvailability}
               presence={currentPresence}
               onGoOffline={snoozeMatching}
+              onSaveProfilePhoto={saveProfilePhoto}
+              photoUploading={photoUploading}
             />
           )}
         </section>
@@ -986,7 +1046,6 @@ function NotificationSheet({
 function MeScreen({
   currentUser,
   firebaseUser,
-  status,
   onSignIn,
   onSignOut,
   mode,
@@ -1010,11 +1069,12 @@ function MeScreen({
   onSaveCourtDefaults,
   onSaveWindow,
   presence,
-  onGoOffline
+  onGoOffline,
+  onSaveProfilePhoto,
+  photoUploading
 }: {
   currentUser: User;
   firebaseUser: FirebaseUser | null;
-  status: string;
   onSignIn: () => void;
   onSignOut: () => void;
   mode: AvailabilityType;
@@ -1039,6 +1099,8 @@ function MeScreen({
   onSaveWindow: (type: "laterToday" | "tomorrow", startTime: string, endTime: string) => void;
   presence: UserPresence;
   onGoOffline: () => void;
+  onSaveProfilePhoto: (photo: Blob) => Promise<void>;
+  photoUploading: boolean;
 }) {
   const scheduledType = mode === "tomorrow" ? "tomorrow" : "laterToday";
   const scheduledStart = scheduledType === "tomorrow" ? tomorrowStart : laterTodayStart;
@@ -1053,10 +1115,11 @@ function MeScreen({
         <Avatar user={currentUser} />
         <div>
           <strong>{firebaseUser ? `${currentUser.firstName} ${currentUser.lastName}` : "PaddleUp Matchmaking"}</strong>
-          <span>{status}</span>
+          <span>{firebaseUser ? currentUser.email : "Sign in to save availability and matches."}</span>
         </div>
         <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
       </section>
+      {firebaseUser && <ProfilePhotoEditor user={currentUser} uploading={photoUploading} onSave={onSaveProfilePhoto} />}
       <Segmented
         value={mode}
         options={[
@@ -1134,6 +1197,100 @@ function PulseCard({ label, value, onClick }: { label: string; value: number; on
       <strong>{value}</strong>
       <span>{label}</span>
     </button>
+  );
+}
+
+function ProfilePhotoEditor({
+  user,
+  uploading,
+  onSave
+}: {
+  user: User;
+  uploading: boolean;
+  onSave: (photo: Blob) => Promise<void>;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [zoom, setZoom] = useState(1.15);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  function chooseFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Choose an image file.");
+      return;
+    }
+
+    setError("");
+    setZoom(1.15);
+    const nextUrl = URL.createObjectURL(file);
+    setPreviewUrl((currentUrl) => {
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      return nextUrl;
+    });
+  }
+
+  async function savePhoto() {
+    if (!previewUrl) {
+      inputRef.current?.click();
+      return;
+    }
+
+    setError("");
+    try {
+      const croppedPhoto = await cropImageToWebp(previewUrl, zoom);
+      await onSave(croppedPhoto);
+      setPreviewUrl((currentUrl) => {
+        if (currentUrl) URL.revokeObjectURL(currentUrl);
+        return "";
+      });
+      if (inputRef.current) inputRef.current.value = "";
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Could not save profile photo.");
+    }
+  }
+
+  return (
+    <section className="photo-editor glass-panel">
+      <div className="photo-editor-header">
+        <div className="photo-preview">
+          {previewUrl ? (
+            <img src={previewUrl} alt="Profile crop preview" style={{ transform: `scale(${zoom})` }} />
+          ) : (
+            <Avatar user={user} />
+          )}
+        </div>
+        <div>
+          <strong>Profile Photo</strong>
+          <span>Upload, crop, and save as WebP.</span>
+        </div>
+      </div>
+      <input ref={inputRef} type="file" accept="image/*" onChange={chooseFile} hidden />
+      {previewUrl && (
+        <label className="zoom-control">
+          <span>Zoom</span>
+          <input type="range" min="1" max="3" step="0.05" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
+        </label>
+      )}
+      {error && <p className="photo-error">{error}</p>}
+      <div className="photo-actions">
+        <button className="ghost-action" onClick={() => inputRef.current?.click()}>
+          {previewUrl ? "Choose Different Photo" : "Upload Photo"}
+        </button>
+        {previewUrl && (
+          <button className="primary-action" disabled={uploading} onClick={savePhoto}>
+            {uploading ? "Saving..." : "Save Photo"}
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 
