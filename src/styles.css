@@ -236,6 +236,12 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-size: 13px;
   line-height: 1.25;
 }
+.status-card p {
+  margin: 5px 0 0;
+  color: var(--pkl-yellow);
+  font-size: 12px;
+  font-weight: 850;
+}
 .status-card button {
   flex: 0 0 auto;
   min-height: 34px;

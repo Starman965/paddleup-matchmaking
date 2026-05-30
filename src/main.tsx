@@ -43,6 +43,7 @@ import "./styles.css";
 const locationById = new Map(locations.map((location) => [location.id, location]));
 const defaultCourtOptions = Array.from({ length: 10 }, (_, index) => `Court ${index + 1}`);
 const adminEmails = new Set(["demandgendave@gmail.com"]);
+const matchLeadTimeMinutes = 30;
 
 type MatchFeedback = {
   type: Exclude<AvailabilityType, "weekend">;
@@ -55,6 +56,7 @@ type MatchFeedback = {
 type UserPresence = {
   label: string;
   detail: string;
+  deadline?: string;
   tone: "offline" | "available" | "matching" | "matched";
 };
 
@@ -88,6 +90,29 @@ function isoForTime(type: "laterToday" | "tomorrow", time: string) {
 function availabilityStatus(availability: Availability) {
   if (availability.type === "readyNow") return "Ready Now";
   return `${availability.type === "tomorrow" ? "Tomorrow" : "Today"} ${formatTime(availability.startTime)}-${formatTime(availability.endTime)}`;
+}
+
+function matchDeadline(availability: Availability) {
+  const endValue = availability.endTime || availability.expiresAt;
+  if (!endValue) return undefined;
+  const deadline = new Date(new Date(endValue).getTime() - matchLeadTimeMinutes * 60 * 1000);
+  return Number.isNaN(deadline.getTime()) ? undefined : deadline;
+}
+
+function formatCountdown(deadline: Date, nowMs: number) {
+  const remainingMinutes = Math.ceil((deadline.getTime() - nowMs) / 60000);
+  if (remainingMinutes <= 0) return "closing now";
+  if (remainingMinutes < 60) return `${remainingMinutes} min left`;
+  const hours = Math.floor(remainingMinutes / 60);
+  const minutes = remainingMinutes % 60;
+  return minutes === 0 ? `${hours} hr left` : `${hours} hr ${minutes} min left`;
+}
+
+function matchDeadlineLabel(availability: Availability | undefined, nowMs: number) {
+  if (!availability) return undefined;
+  const deadline = matchDeadline(availability);
+  if (!deadline) return undefined;
+  return `Match by ${formatTime(deadline.toISOString())} · ${formatCountdown(deadline, nowMs)}`;
 }
 
 function pulseCounts(availability: Availability[], games: Game[]) {
@@ -184,6 +209,7 @@ function App() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [matchFeedback, setMatchFeedback] = useState<MatchFeedback | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
+  const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => {
     initializeAnalytics();
@@ -197,6 +223,11 @@ function App() {
         setFirebaseStatus("Sign in to save availability and see live games.");
       }
     });
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -336,6 +367,7 @@ function App() {
   const currentUserAvailability = activeAvailabilityByUserId.get(activeUserId);
   const currentPresence: UserPresence = useMemo(() => {
     const activeGame = activeMyGames[0];
+    const deadline = matchDeadlineLabel(currentUserAvailability, nowMs);
     if (activeGame?.status === "confirmed") {
       return { label: "Matched", detail: "Your game is confirmed.", tone: "matched" };
     }
@@ -343,20 +375,21 @@ function App() {
       return {
         label: "Getting Matched",
         detail: `${activeGame.playerIds.length}/${activeGame.requiredPlayers} players in your forming game.`,
+        deadline,
         tone: "matching"
       };
     }
     if (currentUserAvailability?.type === "readyNow") {
-      return { label: "Ready Now", detail: "You are actively available right now.", tone: "available" };
+      return { label: "Ready Now", detail: "You are actively available right now.", deadline, tone: "available" };
     }
     if (currentUserAvailability?.type === "laterToday") {
-      return { label: "Available Today", detail: availabilityStatus(currentUserAvailability), tone: "available" };
+      return { label: "Available Today", detail: availabilityStatus(currentUserAvailability), deadline, tone: "available" };
     }
     if (currentUserAvailability?.type === "tomorrow") {
-      return { label: "Available Tomorrow", detail: availabilityStatus(currentUserAvailability), tone: "available" };
+      return { label: "Available Tomorrow", detail: availabilityStatus(currentUserAvailability), deadline, tone: "available" };
     }
     return { label: "Offline", detail: "You will not be matched until you set availability.", tone: "offline" };
-  }, [activeMyGames, currentUserAvailability]);
+  }, [activeMyGames, currentUserAvailability, nowMs]);
   const livePulseCounts = useMemo(() => pulseCounts(liveAvailability, displayGames), [displayGames, liveAvailability]);
 
   useEffect(() => {
@@ -1232,6 +1265,7 @@ function StatusCard({ presence, onTogglePresence }: { presence: UserPresence; on
       <div>
         <span>{presence.label}</span>
         <strong>{presence.detail}</strong>
+        {presence.deadline && <p>{presence.deadline}</p>}
       </div>
       {presence.tone !== "matched" && (
         <button onClick={onTogglePresence}>{presence.tone === "offline" ? "Go Online" : "Go Offline"}</button>

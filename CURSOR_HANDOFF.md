@@ -136,6 +136,7 @@ Success metrics:
 - At least 10 active weekly users
 - At least 20 games formed through the app
 - Average Ready Now formation time under 30 minutes
+- Matchmaking should occur at least 30 minutes before a player's availability expires so confirmed players still have enough usable play time. This is currently a code-level MVP default; future admin tools should make this configurable per `locationId`.
 
 Core navigation:
 
@@ -303,6 +304,7 @@ When 4 players are reached:
 - `meetTime` is set to now plus 30 minutes
 - `court` stays `null` until assigned
 - `gameConfirmed` notifications are created
+- Availability that expires inside the 30-minute match lead-time buffer is ignored for new matching. Future admin tools should expose this match lead-time buffer as a per-location setting.
 
 ### `notifications`
 
@@ -360,11 +362,11 @@ Trigger:
 
 Behavior:
 
-1. Ignore non-Ready Now availability.
-2. Ignore expired availability.
-3. Query all active Ready Now records at the same `locationId`.
-4. Find existing forming doubles game at that location, or create one.
-5. Merge active players into the game.
+1. Ignore non-matchable availability.
+2. Ignore expired, invalid, or too-tight availability that cannot satisfy the 30-minute match lead-time buffer.
+3. Query all active availability records at the same `locationId` and availability type.
+4. Find existing forming doubles game at that location/type, or create one.
+5. Merge eligible players into the game.
 6. If player count reaches 4:
    - set `status: "confirmed"`
    - set `meetTime` to now plus 30 minutes

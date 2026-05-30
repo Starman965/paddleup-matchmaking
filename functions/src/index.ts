@@ -9,6 +9,7 @@ initializeApp();
 const db = getFirestore();
 const REQUIRED_DOUBLES_PLAYERS = 4;
 const DEFAULT_MEET_DELAY_MINUTES = 30;
+const MATCH_LEAD_TIME_MINUTES = 30;
 const ADMIN_EMAILS = new Set(["demandgendave@gmail.com"]);
 
 type Availability = {
@@ -72,9 +73,14 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
   }
 
   const now = new Date();
+  const latestMatchDeadline = new Date(now.getTime() + MATCH_LEAD_TIME_MINUTES * 60 * 1000);
   const triggerWindow = availabilityWindow(availability);
-  if (!triggerWindow || triggerWindow.end <= now) {
-    logger.info("Ignoring expired or invalid availability", { availabilityId, availabilityType });
+  if (!triggerWindow || triggerWindow.end <= latestMatchDeadline) {
+    logger.info("Ignoring expired, invalid, or too-tight availability", {
+      availabilityId,
+      availabilityType,
+      matchLeadTimeMinutes: MATCH_LEAD_TIME_MINUTES
+    });
     return;
   }
 
@@ -89,7 +95,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
   for (const doc of activeAvailabilitySnapshot.docs) {
     const data = doc.data() as Availability;
     const window = availabilityWindow(data);
-    if (!data.userId || !window || window.end <= now) continue;
+    if (!data.userId || !window || window.end <= latestMatchDeadline) continue;
     if (!candidates.some((candidate) => candidate.userId === data.userId)) {
       candidates.push({ userId: data.userId, availabilityId: doc.id, ...window });
     }
