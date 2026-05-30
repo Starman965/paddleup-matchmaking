@@ -112,6 +112,38 @@ button { border: 0; cursor: pointer; }
   backdrop-filter: blur(18px) saturate(145%);
 }
 
+.auth-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  margin-bottom: 14px;
+}
+.auth-strip strong {
+  display: block;
+  font-size: 13px;
+  line-height: 1.2;
+}
+.auth-strip span {
+  display: block;
+  margin-top: 3px;
+  color: #617268;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.auth-strip button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 14px;
+  color: white;
+  background: #0b7d43;
+  font-size: 12px;
+  font-weight: 850;
+}
+
 .hero-cta {
   position: relative;
   padding: 22px;

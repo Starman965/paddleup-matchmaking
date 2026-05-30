@@ -11,6 +11,11 @@ npm run dev -- --port 5173
 
 Open `http://localhost:5173/`.
 
+## Live URLs
+
+- Firebase Hosting: https://paddleup-match-maker.web.app
+- GitHub Pages prototype: https://starman965.github.io/paddleup-matchmaking/
+
 ## Build
 
 ```bash
@@ -18,6 +23,13 @@ npm run build
 ```
 
 The production app is emitted to `dist/`.
+
+## Deploy to Firebase Hosting
+
+```bash
+npm run build
+firebase deploy --only hosting --project paddleup-match-maker
+```
 
 ## Architecture Notes
 

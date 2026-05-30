@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { onAuthStateChanged, signInWithPopup, signOut, type User as FirebaseUser } from "firebase/auth";
 import {
   Bell,
   Calendar,
@@ -18,6 +19,8 @@ import {
 } from "lucide-react";
 import { availabilities, currentUserId, games, locations, playmates as seedPlaymates, users } from "./data";
 import type { AvailabilityType, Game, TabKey, User } from "./domain";
+import { auth, googleProvider, initializeAnalytics } from "./firebase";
+import { markReadyNow, seedBlackhawkMvp } from "./firebaseSeed";
 import "./styles.css";
 
 const locationById = new Map(locations.map((location) => [location.id, location]));
@@ -49,6 +52,22 @@ function App() {
   const [playmateState, setPlaymateState] = useState(seedPlaymates);
   const [joinedGameIds, setJoinedGameIds] = useState<string[]>([]);
   const [assignedCourts, setAssignedCourts] = useState<Record<string, string>>({ g2: "Court TBD", g3: "Court TBD" });
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [firebaseStatus, setFirebaseStatus] = useState("Firebase connected. Sign in to write live availability.");
+
+  useEffect(() => {
+    initializeAnalytics();
+    return onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      if (user) {
+        seedBlackhawkMvp()
+          .then(() => setFirebaseStatus("Signed in. Blackhawk MVP seed is ready."))
+          .catch((error: Error) => setFirebaseStatus(`Signed in, but seed failed: ${error.message}`));
+      } else {
+        setFirebaseStatus("Firebase connected. Sign in to write live availability.");
+      }
+    });
+  }, []);
 
   const activeLocation = locations[0];
   const currentUser = userById.get(currentUserId)!;
@@ -90,6 +109,16 @@ function App() {
         </header>
 
         <section className="screen">
+          <AuthStrip
+            firebaseUser={firebaseUser}
+            status={firebaseStatus}
+            onSignIn={() =>
+              signInWithPopup(auth, googleProvider).catch((error: Error) => {
+                setFirebaseStatus(`Sign-in failed: ${error.message}`);
+              })
+            }
+            onSignOut={() => signOut(auth)}
+          />
           {activeTab === "home" && (
             <HomeScreen
               nextGame={nextGame}
@@ -121,10 +150,21 @@ function App() {
           {activeTab === "me" && (
             <MeScreen
               currentUser={currentUser}
+              firebaseUser={firebaseUser}
               mode={availabilityMode}
               setMode={setAvailabilityMode}
               duration={duration}
               setDuration={setDuration}
+              onStartMatching={() => {
+                if (!firebaseUser) {
+                  setFirebaseStatus("Sign in first, then Ready Now can write to Firestore.");
+                  return;
+                }
+
+                markReadyNow(firebaseUser.uid, activeLocation.id, duration)
+                  .then(() => setFirebaseStatus(`Ready Now saved for ${duration} minutes at ${activeLocation.name}.`))
+                  .catch((error: Error) => setFirebaseStatus(`Ready Now failed: ${error.message}`));
+              }}
             />
           )}
         </section>
@@ -142,6 +182,28 @@ function App() {
         </nav>
       </div>
     </main>
+  );
+}
+
+function AuthStrip({
+  firebaseUser,
+  status,
+  onSignIn,
+  onSignOut
+}: {
+  firebaseUser: FirebaseUser | null;
+  status: string;
+  onSignIn: () => void;
+  onSignOut: () => void;
+}) {
+  return (
+    <section className="auth-strip glass-panel">
+      <div>
+        <strong>{firebaseUser ? firebaseUser.displayName || firebaseUser.email : "Firebase MVP"}</strong>
+        <span>{status}</span>
+      </div>
+      <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
+    </section>
   );
 }
 
@@ -267,16 +329,20 @@ function GamesScreen({ games, onAssignCourt }: { games: Game[]; onAssignCourt: (
 
 function MeScreen({
   currentUser,
+  firebaseUser,
   mode,
   setMode,
   duration,
-  setDuration
+  setDuration,
+  onStartMatching
 }: {
   currentUser: User;
+  firebaseUser: FirebaseUser | null;
   mode: AvailabilityType;
   setMode: (mode: AvailabilityType) => void;
   duration: number;
   setDuration: (duration: number) => void;
+  onStartMatching: () => void;
 }) {
   return (
     <div className="stack">
@@ -307,7 +373,9 @@ function MeScreen({
               </button>
             ))}
           </div>
-          <button className="primary-action">Start Matching</button>
+          <button className="primary-action" onClick={onStartMatching}>
+            {firebaseUser ? "Start Matching" : "Sign In To Match"}
+          </button>
         </section>
       ) : (
         <section className="glass-panel time-window">
