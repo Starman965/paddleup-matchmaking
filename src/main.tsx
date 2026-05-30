@@ -915,7 +915,7 @@ function HomeScreen({
       )}
 
       <section className="stack">
-        <SectionTitle title="Forming Games" />
+        <SectionTitle title="Games Forming" />
         {forming.length === 0 && <p className="empty-copy">No games forming right now. Start with Ready Now when you want to play.</p>}
         {forming.map((game) => (
           <FormingGame key={game.id} game={game} userById={userById} />
