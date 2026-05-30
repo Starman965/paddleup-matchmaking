@@ -1217,8 +1217,8 @@ function MeScreen({
         <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
       </section>
       <section className="glass-panel preference-panel">
-        <SectionTitle title="Ready Now Duration" />
-        <p>Used when you tap I Want to Play or Go Online from Home.</p>
+        <SectionTitle title="Default Ready Now Setting" />
+        <p>Used when you click Ready Now.</p>
         <div className="duration-grid compact">
           {[30, 60, 90, 120].map((minutes) => (
             <button key={minutes} className={duration === minutes ? "selected" : ""} onClick={() => setDuration(minutes)}>
