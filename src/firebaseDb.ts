@@ -1,6 +1,5 @@
 import {
   collection,
-  deleteDoc,
   doc,
   getDoc,
   onSnapshot,
@@ -46,6 +45,7 @@ function userFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): User {
     email: readString(data.email),
     photoUrl: readString(data.photoUrl),
     locationId: readString(data.locationId, "blackhawk"),
+    presence: data.presence === "offline" ? "offline" : "visible",
     isTestUser: data.isTestUser === true
   };
 }
@@ -112,6 +112,7 @@ export async function upsertCurrentUser(firebaseUser: FirebaseUser, locationId: 
   const userRef = doc(db, "users", firebaseUser.uid);
   const existingUser = await getDoc(userRef);
   const existingPhotoUrl = existingUser.exists() ? readString(existingUser.data().photoUrl) : "";
+  const existingPresence = existingUser.exists() && existingUser.data().presence === "offline" ? "offline" : "visible";
 
   await setDoc(
     userRef,
@@ -122,6 +123,7 @@ export async function upsertCurrentUser(firebaseUser: FirebaseUser, locationId: 
       email: firebaseUser.email || "",
       photoUrl: existingPhotoUrl || firebaseUser.photoURL || "",
       locationId,
+      presence: existingPresence,
       updatedAt: serverTimestamp()
     },
     { merge: true }
@@ -180,10 +182,11 @@ export async function saveAvailabilityWindow(
   });
 }
 
-export async function goOffline(userId: string) {
-  await Promise.all(
-    ["readyNow", "laterToday", "tomorrow"].map((type) => deleteDoc(doc(db, "availability", `${userId}_${type}`)))
-  );
+export async function setUserPresence(userId: string, presence: "visible" | "offline") {
+  await updateDoc(doc(db, "users", userId), {
+    presence,
+    updatedAt: serverTimestamp()
+  });
 }
 
 export function subscribeLocationUsers(locationId: string, onUsers: (users: User[]) => void, onError: (error: Error) => void): Unsubscribe {

@@ -186,24 +186,26 @@ Authentication:
   - `email`
   - `photoUrl`
   - `locationId`
+  - `presence` (`visible` or `offline`)
 
 Home:
 
 - Shows a large `I Want to Play` CTA
 - Shows user's next confirmed game if signed in and a live game exists
-- Shows latest notification cards for the signed-in user
-- Shows forming games
+- Shows live availability counts and joinable future Today/Tomorrow windows
+- Shows games forming
 - Signed-out state uses sample data so the app still looks presentable
 
 Me:
 
-- User can mark `Ready Now`
-- Default durations:
+- User can switch visibility between visible/offline without signing out
+- Offline hides the user from player lists and future availability marketplace cards, but does not remove them from games
+- User can set default Ready Now duration:
   - 30 minutes
   - 60 minutes
   - 90 minutes
   - 120 minutes
-- `Start Matching` writes `availability/{uid}_readyNow`
+- Home availability actions write `availability/{uid}_readyNow`, `availability/{uid}_laterToday`, or `availability/{uid}_tomorrow`
 - Backend Cloud Function reacts and creates/updates a forming doubles game
 
 My Games:
@@ -211,12 +213,12 @@ My Games:
 - Reads real Firestore `games` after sign-in
 - Shows forming and confirmed games
 - Confirmed game `Court TBD` pill now calls the backend `assignCourt` function
-- Current UI assigns `Court 4` as a simple MVP action
+- Confirmed games allow any player to adjust the start time in 15-minute increments
 
 Players:
 
-- Still mostly sample/playmate UI
 - Live users are merged into the app's known user map after sign-in
+- Offline users are hidden from player lists except the current user's own row
 - Playmate add/remove is local UI state only right now; Firestore rules are ready for `playmates`, but the UI is not fully wired to persist it
 
 Notifications:
@@ -251,6 +253,7 @@ Current doc:
   "email": "",
   "photoUrl": "",
   "locationId": "blackhawk",
+  "presence": "visible",
   "updatedAt": "serverTimestamp"
 }
 ```

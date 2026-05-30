@@ -281,6 +281,28 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-weight: 850;
   white-space: nowrap;
 }
+.future-card {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+}
+.future-card strong {
+  display: block;
+  color: var(--pkl-text);
+  font-size: 14px;
+}
+.future-card span {
+  display: block;
+  margin-top: 4px;
+  color: var(--pkl-muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+.future-card .avatar-stack {
+  margin-top: 0;
+}
 .court-sheet-backdrop {
   position: absolute;
   z-index: 6;
@@ -488,6 +510,10 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   background: var(--pkl-yellow);
   font-size: 10px !important;
   font-weight: 900 !important;
+}
+.availability-badge.muted {
+  color: var(--pkl-muted) !important;
+  background: rgba(255,255,255,0.08);
 }
 .self-badge {
   display: inline-grid !important;

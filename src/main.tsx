@@ -19,12 +19,12 @@ import type { Availability, AvailabilityType, Game, Playmate, TabKey, User } fro
 import { auth, googleProvider, initializeAnalytics, trackEvent } from "./firebase";
 import {
   assignGameCourt,
-  goOffline,
   leaveGame,
   markReadyNow,
   resetTestData,
   saveAvailabilityWindow,
   setPlaymateEnabled,
+  setUserPresence,
   subscribeLocation,
   subscribeLocationAvailability,
   subscribeLocationGames,
@@ -54,6 +54,14 @@ type UserPresence = {
   detail: string;
   deadline?: string;
   tone: "offline" | "available" | "matching" | "matched";
+};
+
+type AvailabilityGroup = {
+  id: string;
+  type: "laterToday" | "tomorrow";
+  startTime: string;
+  endTime: string;
+  userIds: string[];
 };
 
 function formatTime(value: string) {
@@ -135,6 +143,28 @@ function pulseCounts(availability: Availability[], games: Game[]) {
   };
 }
 
+function futureAvailabilityGroups(availability: Availability[], userById: Map<string, User>, activeUserId: string, nowMs: number) {
+  const groups = new Map<string, AvailabilityGroup>();
+  availability
+    .filter((item) => (item.type === "laterToday" || item.type === "tomorrow") && new Date(item.endTime).getTime() > nowMs)
+    .filter((item) => item.userId === activeUserId || userById.get(item.userId)?.presence !== "offline")
+    .forEach((item) => {
+      const type = item.type as "laterToday" | "tomorrow";
+      const key = `${type}_${item.startTime}_${item.endTime}`;
+      const group = groups.get(key) ?? {
+        id: key,
+        type,
+        startTime: item.startTime,
+        endTime: item.endTime,
+        userIds: []
+      };
+      if (!group.userIds.includes(item.userId)) group.userIds.push(item.userId);
+      groups.set(key, group);
+    });
+
+  return Array.from(groups.values()).sort((groupA, groupB) => new Date(groupA.startTime).getTime() - new Date(groupB.startTime).getTime());
+}
+
 function initials(user: User) {
   const first = user.firstName?.[0] || "P";
   const last = user.lastName?.[0] || "";
@@ -149,7 +179,8 @@ function userFromFirebase(firebaseUser: FirebaseUser, locationId: string): User 
     lastName: lastNameParts.join(" "),
     email: firebaseUser.email || "",
     photoUrl: firebaseUser.photoURL || "",
-    locationId
+    locationId,
+    presence: "visible"
   };
 }
 
@@ -325,6 +356,7 @@ function App() {
   const visiblePlayers = useMemo(() => {
     const search = playerSearch.trim().toLowerCase();
     return allUsers
+      .filter((user) => user.uid === activeUserId || user.presence !== "offline")
       .filter((user) => user.uid === activeUserId || playerTab === "community" || playmateIds.has(user.uid))
       .filter((user) => {
         if (!search) return true;
@@ -387,9 +419,13 @@ function App() {
     if (currentUserAvailability?.type === "tomorrow") {
       return { label: "Available Tomorrow", detail: availabilityStatus(currentUserAvailability), deadline, tone: "available" };
     }
-    return { label: "Offline", detail: "You will not be matched until you set availability.", tone: "offline" };
-  }, [activeMyGames, currentUserAvailability, nowMs]);
+    if (currentUser.presence === "offline") {
+      return { label: "Offline", detail: "You are hidden from Players. Your matches stay active.", tone: "offline" };
+    }
+    return { label: "Not Matchable", detail: "Choose Ready Now, Today, or Tomorrow when you want to play.", tone: "offline" };
+  }, [activeMyGames, currentUser.presence, currentUserAvailability, nowMs]);
   const livePulseCounts = useMemo(() => pulseCounts(liveAvailability, displayGames), [displayGames, liveAvailability]);
+  const futureGroups = useMemo(() => futureAvailabilityGroups(liveAvailability, userById, activeUserId, nowMs), [activeUserId, liveAvailability, nowMs, userById]);
 
   useEffect(() => {
     if (!matchFeedback || matchFeedback.status === "confirmed" || matchFeedback.status === "alreadyActive" || matchFeedback.status === "error") return;
@@ -527,6 +563,10 @@ function App() {
       return;
     }
 
+    if (currentUser.presence === "offline") {
+      setUserPresence(firebaseUser.uid, "visible").catch((error: Error) => setFirebaseStatus(`Presence update failed: ${error.message}`));
+    }
+
     const startIso = isoForTime(type, startTime);
     const endIso = isoForTime(type, endTime);
     if (new Date(endIso) <= new Date(startIso)) {
@@ -562,6 +602,10 @@ function App() {
     setAvailabilityMode("readyNow");
     if (!beginMatchingFeedback("readyNow")) return;
 
+    if (currentUser.presence === "offline") {
+      setUserPresence(firebaseUser.uid, "visible").catch((error: Error) => setFirebaseStatus(`Presence update failed: ${error.message}`));
+    }
+
     trackEvent("ready_now_clicked", { durationMinutes: duration, locationId: activeLocation.id });
     markReadyNow(firebaseUser.uid, activeLocation.id, duration)
       .then(() => {
@@ -591,6 +635,11 @@ function App() {
     saveWindowAvailability(type, startTime, endTime);
   }
 
+  function joinFutureAvailability(group: AvailabilityGroup) {
+    setAvailabilityMode(group.type);
+    saveWindowAvailability(group.type, timeInputValue(group.startTime), timeInputValue(group.endTime));
+  }
+
   function togglePlaymate(uid: string) {
     const enabled = !playmateIds.has(uid);
     setPlaymateState((records) => {
@@ -616,65 +665,40 @@ function App() {
       .finally(() => setAdminBusy(false));
   }
 
-  function goOnline() {
+  function setVisiblePresence() {
     if (!firebaseUser) {
       setFirebaseStatus("Sign in first, then you can control your availability.");
       return;
     }
 
-    setAvailabilityMode("readyNow");
-    if (!beginMatchingFeedback("readyNow")) return;
-
-    trackEvent("availability_toggled_online", { durationMinutes: duration, locationId: activeLocation.id });
-    markReadyNow(firebaseUser.uid, activeLocation.id, duration)
+    setUserPresence(firebaseUser.uid, "visible")
       .then(() => {
-        trackEvent("availability_created", { type: "readyNow", durationMinutes: duration, locationId: activeLocation.id });
-        setFirebaseStatus(`You are back online for ${duration} minutes.`);
+        trackEvent("presence_updated", { presence: "visible", locationId: activeLocation.id });
+        setFirebaseStatus("You are visible in Players.");
       })
-      .catch((error: Error) => {
-        setMatchFeedback({
-          type: "readyNow",
-          status: "error",
-          title: "Going Online Failed",
-          body: error.message
-        });
-        setFirebaseStatus(`Going online failed: ${error.message}`);
-      });
+      .catch((error: Error) => setFirebaseStatus(`Presence update failed: ${error.message}`));
   }
 
-  function goOfflineNow() {
+  function setOfflinePresence() {
     if (!firebaseUser) {
       setFirebaseStatus("Sign in first, then you can control your availability.");
       return;
     }
 
-    const formingGame = activeMyGames.find((game) => game.status === "forming");
-    const offlineAction = formingGame ? leaveGame(formingGame.id) : goOffline(firebaseUser.uid);
-    if (formingGame) setLeavingGameId(formingGame.id);
-
-    offlineAction
+    setUserPresence(firebaseUser.uid, "offline")
       .then(() => {
-        if (formingGame) trackEvent("game_left", { gameId: formingGame.id });
-        trackEvent("availability_toggled_offline", { locationId: activeLocation.id });
-        setMatchFeedback(null);
-        setFirebaseStatus(
-          formingGame
-            ? "You are offline and were removed from the forming game."
-            : "You are offline. PaddleUp will not match you until you go back online."
-        );
+        trackEvent("presence_updated", { presence: "offline", locationId: activeLocation.id });
+        setFirebaseStatus("You are hidden from Players. Existing matches stay active.");
       })
-      .catch((error: Error) => setFirebaseStatus(`Going offline failed: ${error.message}`))
-      .finally(() => {
-        if (formingGame) setLeavingGameId(null);
-      });
+      .catch((error: Error) => setFirebaseStatus(`Presence update failed: ${error.message}`));
   }
 
   function togglePresence() {
-    if (currentPresence.tone === "offline") {
-      goOnline();
+    if (currentUser.presence === "offline") {
+      setVisiblePresence();
       return;
     }
-    goOfflineNow();
+    setOfflinePresence();
   }
 
   function saveProfilePhoto(photo: Blob) {
@@ -732,9 +756,11 @@ function App() {
               presence={currentPresence}
               counts={livePulseCounts}
               matchFeedback={matchFeedback}
+              futureGroups={futureGroups}
+              activeUserId={activeUserId}
               onSetTab={setActiveTab}
               onChooseAvailability={chooseHomeAvailability}
-              onTogglePresence={togglePresence}
+              onJoinFuture={joinFutureAvailability}
             />
           )}
           {activeTab === "players" && (
@@ -774,6 +800,7 @@ function App() {
               adminBusy={adminBusy}
               onResetTestData={runAdminResetTestData}
               presence={currentPresence}
+              isOffline={currentUser.presence === "offline"}
               onTogglePresence={togglePresence}
               onEditPhoto={() => setPhotoEditorOpen(true)}
             />
@@ -825,9 +852,11 @@ function HomeScreen({
   presence,
   counts,
   matchFeedback,
+  futureGroups,
+  activeUserId,
   onSetTab,
   onChooseAvailability,
-  onTogglePresence,
+  onJoinFuture
 }: {
   nextGame?: Game;
   games: Game[];
@@ -835,9 +864,11 @@ function HomeScreen({
   presence: UserPresence;
   counts: ReturnType<typeof pulseCounts>;
   matchFeedback: MatchFeedback | null;
+  futureGroups: AvailabilityGroup[];
+  activeUserId: string;
   onSetTab: (tab: TabKey) => void;
   onChooseAvailability: (mode: Exclude<AvailabilityType, "weekend">) => void;
-  onTogglePresence: () => void;
+  onJoinFuture: (group: AvailabilityGroup) => void;
 }) {
   const forming = games.filter((game) => game.status === "forming");
   const primaryCta =
@@ -856,7 +887,7 @@ function HomeScreen({
 
   return (
     <div className="stack">
-      <StatusCard presence={presence} onTogglePresence={onTogglePresence} />
+      <StatusCard presence={presence} />
       <section className="hero-cta glass-panel">
         <Sparkles className="spark" size={24} />
         <p>Fastest path to a court</p>
@@ -883,6 +914,21 @@ function HomeScreen({
         <PulseCard label="Forming" value={counts.formingGames} onClick={() => onSetTab("games")} />
       </section>
 
+      {futureGroups.length > 0 && (
+        <section className="stack">
+          <SectionTitle title="Future Matches" />
+          {futureGroups.slice(0, 4).map((group) => (
+            <FutureAvailabilityCard
+              key={group.id}
+              group={group}
+              userById={userById}
+              activeUserId={activeUserId}
+              onJoin={() => onJoinFuture(group)}
+            />
+          ))}
+        </section>
+      )}
+
       {nextGame && (
         <section className="glass-panel">
           <SectionTitle title="Next Game" action="View Game" onClick={() => onSetTab("games")} />
@@ -899,6 +945,36 @@ function HomeScreen({
       </section>
 
     </div>
+  );
+}
+
+function FutureAvailabilityCard({
+  group,
+  userById,
+  activeUserId,
+  onJoin
+}: {
+  group: AvailabilityGroup;
+  userById: Map<string, User>;
+  activeUserId: string;
+  onJoin: () => void;
+}) {
+  const users = group.userIds.map((id) => userById.get(id)).filter((user): user is User => Boolean(user));
+  const joined = group.userIds.includes(activeUserId);
+  const leadUser = users.find((user) => user.uid !== activeUserId) ?? users[0];
+  const title = `${group.type === "tomorrow" ? "Tomorrow" : "Today"} ${formatTime(group.startTime)}-${formatTime(group.endTime)}`;
+
+  return (
+    <article className="future-card glass-panel">
+      <div>
+        <strong>{title}</strong>
+        <span>{leadUser ? `${leadUser.firstName} ${leadUser.lastName}` : "Players"} interested · {group.userIds.length}/4</span>
+      </div>
+      <AvatarStack users={users} missing={Math.max(0, 4 - users.length)} />
+      <button className="court-pill" disabled={joined} onClick={onJoin}>
+        {joined ? "Joined" : "Join"}
+      </button>
+    </article>
   );
 }
 
@@ -943,14 +1019,19 @@ function PlayersScreen({
           const isSelf = user.uid === activeUserId;
           const isPlaymate = playmateIds.has(user.uid);
           const availability = availabilityByUserId.get(user.uid);
+          const statusCopy = user.presence === "offline" ? "Offline" : availability ? availabilityStatus(availability) : locationById.get(user.locationId)?.name;
           return (
             <article className={`player-row ${isSelf ? "self" : ""}`} key={user.uid}>
               <Avatar user={user} />
               <div>
                 <strong>{user.firstName} {user.lastName}{isSelf ? " · You" : ""}</strong>
-                <span>{availability ? availabilityStatus(availability) : locationById.get(user.locationId)?.name}</span>
+                <span>{statusCopy}</span>
               </div>
-              {availability && <span className="availability-badge">{availability.type === "readyNow" ? "Now" : availability.type === "tomorrow" ? "Tmrw" : "Today"}</span>}
+              {user.presence === "offline" ? (
+                <span className="availability-badge muted">Off</span>
+              ) : availability && (
+                <span className="availability-badge">{availability.type === "readyNow" ? "Now" : availability.type === "tomorrow" ? "Tmrw" : "Today"}</span>
+              )}
               {isSelf ? (
                 <span className="self-badge">You</span>
               ) : (
@@ -1108,6 +1189,7 @@ function MeScreen({
   adminBusy,
   onResetTestData,
   presence,
+  isOffline,
   onTogglePresence,
   onEditPhoto
 }: {
@@ -1121,12 +1203,13 @@ function MeScreen({
   adminBusy: boolean;
   onResetTestData: () => void;
   presence: UserPresence;
+  isOffline: boolean;
   onTogglePresence: () => void;
   onEditPhoto: () => void;
 }) {
   return (
     <div className="stack">
-      <StatusCard presence={presence} onTogglePresence={onTogglePresence} />
+      <StatusCard presence={presence} />
       <section className="account-panel glass-panel">
         <button className="avatar-edit-button" onClick={firebaseUser ? onEditPhoto : onSignIn} aria-label="Edit profile photo">
           <Avatar user={currentUser} />
@@ -1136,6 +1219,13 @@ function MeScreen({
           <span>{firebaseUser ? "Tap your photo to update it." : "Sign in to save availability and matches."}</span>
         </div>
         <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
+      </section>
+      <section className="glass-panel preference-panel">
+        <SectionTitle title="Visibility" />
+        <p>{isOffline ? "You are hidden from player lists. Existing matches stay active." : "You are visible in player lists."}</p>
+        <button className="ghost-action" onClick={onTogglePresence}>
+          {isOffline ? "Go Visible" : "Go Offline"}
+        </button>
       </section>
       <section className="glass-panel preference-panel">
         <SectionTitle title="Default Ready Now Setting" />
@@ -1170,7 +1260,7 @@ function SectionTitle({ title, action, onClick }: { title: string; action?: stri
   );
 }
 
-function StatusCard({ presence, onTogglePresence }: { presence: UserPresence; onTogglePresence: () => void }) {
+function StatusCard({ presence }: { presence: UserPresence }) {
   return (
     <section className={`status-card glass-panel ${presence.tone}`}>
       <div>
@@ -1178,9 +1268,6 @@ function StatusCard({ presence, onTogglePresence }: { presence: UserPresence; on
         <strong>{presence.detail}</strong>
         {presence.deadline && <p>{presence.deadline}</p>}
       </div>
-      {presence.tone !== "matched" && (
-        <button onClick={onTogglePresence}>{presence.tone === "offline" ? "Go Online" : "Go Offline"}</button>
-      )}
     </section>
   );
 }

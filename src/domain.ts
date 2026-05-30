@@ -14,6 +14,7 @@ export type User = {
   email: string;
   photoUrl: string;
   locationId: string;
+  presence?: "visible" | "offline";
   isTestUser?: boolean;
 };
 
