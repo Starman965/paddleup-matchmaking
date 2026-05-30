@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteDoc,
   doc,
   onSnapshot,
   query,
@@ -172,6 +173,12 @@ export async function saveAvailabilityWindow(
     expiresAt: endTime,
     updatedAt: serverTimestamp()
   });
+}
+
+export async function goOffline(userId: string) {
+  await Promise.all(
+    ["readyNow", "laterToday", "tomorrow"].map((type) => deleteDoc(doc(db, "availability", `${userId}_${type}`)))
+  );
 }
 
 export function subscribeLocationUsers(locationId: string, onUsers: (users: User[]) => void, onError: (error: Error) => void): Unsubscribe {

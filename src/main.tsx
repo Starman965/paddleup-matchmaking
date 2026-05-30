@@ -20,6 +20,7 @@ import type { Availability, AvailabilityType, Game, Notification, Playmate, TabK
 import { auth, googleProvider, initializeAnalytics, trackEvent } from "./firebase";
 import {
   assignGameCourt,
+  goOffline,
   leaveGame,
   markReadyNow,
   markNotificationRead,
@@ -48,6 +49,12 @@ type MatchFeedback = {
   title: string;
   body: string;
   previousGameIds?: string[];
+};
+
+type UserPresence = {
+  label: string;
+  detail: string;
+  tone: "offline" | "available" | "matching" | "matched";
 };
 
 function formatTime(value: string) {
@@ -80,6 +87,17 @@ function isoForTime(type: "laterToday" | "tomorrow", time: string) {
 function availabilityStatus(availability: Availability) {
   if (availability.type === "readyNow") return "Ready Now";
   return `${availability.type === "tomorrow" ? "Tomorrow" : "Today"} ${formatTime(availability.startTime)}-${formatTime(availability.endTime)}`;
+}
+
+function pulseCounts(availability: Availability[], games: Game[]) {
+  const now = Date.now();
+  const active = availability.filter((item) => !item.expiresAt || new Date(item.expiresAt).getTime() > now);
+  return {
+    readyNow: active.filter((item) => item.type === "readyNow").length,
+    laterToday: active.filter((item) => item.type === "laterToday").length,
+    tomorrow: active.filter((item) => item.type === "tomorrow").length,
+    formingGames: games.filter((game) => game.status === "forming").length
+  };
 }
 
 function initials(user: User) {
@@ -276,6 +294,30 @@ function App() {
     );
   }, [liveAvailability]);
   const currentUserAvailability = activeAvailabilityByUserId.get(activeUserId);
+  const currentPresence: UserPresence = useMemo(() => {
+    const activeGame = activeMyGames[0];
+    if (activeGame?.status === "confirmed") {
+      return { label: "Matched", detail: "Your game is confirmed.", tone: "matched" };
+    }
+    if (activeGame?.status === "forming") {
+      return {
+        label: "Getting Matched",
+        detail: `${activeGame.playerIds.length}/${activeGame.requiredPlayers} players in your forming game.`,
+        tone: "matching"
+      };
+    }
+    if (currentUserAvailability?.type === "readyNow") {
+      return { label: "Ready Now", detail: "You are actively available right now.", tone: "available" };
+    }
+    if (currentUserAvailability?.type === "laterToday") {
+      return { label: "Available Today", detail: availabilityStatus(currentUserAvailability), tone: "available" };
+    }
+    if (currentUserAvailability?.type === "tomorrow") {
+      return { label: "Available Tomorrow", detail: availabilityStatus(currentUserAvailability), tone: "available" };
+    }
+    return { label: "Offline", detail: "You will not be matched until you set availability.", tone: "offline" };
+  }, [activeMyGames, currentUserAvailability]);
+  const livePulseCounts = useMemo(() => pulseCounts(liveAvailability, displayGames), [displayGames, liveAvailability]);
 
   useEffect(() => {
     if (!matchFeedback || matchFeedback.status === "confirmed" || matchFeedback.status === "alreadyActive" || matchFeedback.status === "error") return;
@@ -470,6 +512,20 @@ function App() {
       .finally(() => setAdminBusy(false));
   }
 
+  function snoozeMatching() {
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then you can control your availability.");
+      return;
+    }
+
+    goOffline(firebaseUser.uid)
+      .then(() => {
+        setMatchFeedback(null);
+        setFirebaseStatus("You are offline. PaddleUp will not match you until you set availability.");
+      })
+      .catch((error: Error) => setFirebaseStatus(`Going offline failed: ${error.message}`));
+  }
+
   function signIn() {
     signInWithPopup(auth, googleProvider).catch((error: Error) => {
       setFirebaseStatus(`Sign-in failed: ${error.message}`);
@@ -507,8 +563,11 @@ function App() {
               games={displayGames}
               userById={userById}
               notifications={notifications}
+              presence={currentPresence}
+              counts={livePulseCounts}
               onSetTab={setActiveTab}
               onMode={setAvailabilityMode}
+              onGoOffline={snoozeMatching}
               onReadNotification={markOneNotificationRead}
             />
           )}
@@ -584,6 +643,8 @@ function App() {
               onResetTestData={runAdminResetTestData}
               onSaveCourtDefaults={saveAdminCourtDefaults}
               onSaveWindow={saveWindowAvailability}
+              presence={currentPresence}
+              onGoOffline={snoozeMatching}
             />
           )}
         </section>
@@ -631,26 +692,46 @@ function HomeScreen({
   games,
   userById,
   notifications,
+  presence,
+  counts,
   onSetTab,
   onMode,
+  onGoOffline,
   onReadNotification
 }: {
   nextGame?: Game;
   games: Game[];
   userById: Map<string, User>;
   notifications: Notification[];
+  presence: UserPresence;
+  counts: ReturnType<typeof pulseCounts>;
   onSetTab: (tab: TabKey) => void;
   onMode: (mode: AvailabilityType) => void;
+  onGoOffline: () => void;
   onReadNotification: (notificationId: string) => void;
 }) {
   const forming = games.filter((game) => game.status === "forming");
+  const primaryCta =
+    presence.tone === "matched" || presence.tone === "matching"
+      ? "View My Game"
+      : presence.tone === "available"
+        ? "Update Availability"
+        : "I Want to Play";
+  const onPrimaryCta = () => {
+    if (presence.tone === "matched" || presence.tone === "matching") {
+      onSetTab("games");
+      return;
+    }
+    onSetTab("me");
+  };
 
   return (
     <div className="stack">
+      <StatusCard presence={presence} onGoOffline={onGoOffline} />
       <section className="hero-cta glass-panel">
         <Sparkles className="spark" size={24} />
         <p>Fastest path to a court</p>
-        <button onClick={() => onSetTab("me")}>I Want to Play</button>
+        <button onClick={onPrimaryCta}>{primaryCta}</button>
         <div className="mode-row">
           {[
             ["readyNow", "Ready Now"],
@@ -662,6 +743,13 @@ function HomeScreen({
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="pulse-grid">
+        <PulseCard label="Ready Now" value={counts.readyNow} onClick={() => { onMode("readyNow"); onSetTab("me"); }} />
+        <PulseCard label="Later Today" value={counts.laterToday} onClick={() => { onMode("laterToday"); onSetTab("me"); }} />
+        <PulseCard label="Tomorrow" value={counts.tomorrow} onClick={() => { onMode("tomorrow"); onSetTab("me"); }} />
+        <PulseCard label="Forming" value={counts.formingGames} onClick={() => onSetTab("games")} />
       </section>
 
       {nextGame && (
@@ -920,7 +1008,9 @@ function MeScreen({
   courtCount,
   onResetTestData,
   onSaveCourtDefaults,
-  onSaveWindow
+  onSaveWindow,
+  presence,
+  onGoOffline
 }: {
   currentUser: User;
   firebaseUser: FirebaseUser | null;
@@ -947,6 +1037,8 @@ function MeScreen({
   onResetTestData: () => void;
   onSaveCourtDefaults: () => void;
   onSaveWindow: (type: "laterToday" | "tomorrow", startTime: string, endTime: string) => void;
+  presence: UserPresence;
+  onGoOffline: () => void;
 }) {
   const scheduledType = mode === "tomorrow" ? "tomorrow" : "laterToday";
   const scheduledStart = scheduledType === "tomorrow" ? tomorrowStart : laterTodayStart;
@@ -956,6 +1048,7 @@ function MeScreen({
 
   return (
     <div className="stack">
+      <StatusCard presence={presence} onGoOffline={onGoOffline} />
       <section className="account-panel glass-panel">
         <Avatar user={currentUser} />
         <div>
@@ -1020,6 +1113,27 @@ function SectionTitle({ title, action, onClick }: { title: string; action?: stri
       <h2>{title}</h2>
       {action && <button onClick={onClick}>{action}<ChevronRight size={16} /></button>}
     </div>
+  );
+}
+
+function StatusCard({ presence, onGoOffline }: { presence: UserPresence; onGoOffline: () => void }) {
+  return (
+    <section className={`status-card glass-panel ${presence.tone}`}>
+      <div>
+        <span>{presence.label}</span>
+        <strong>{presence.detail}</strong>
+      </div>
+      {presence.tone !== "offline" && <button onClick={onGoOffline}>Go Offline</button>}
+    </section>
+  );
+}
+
+function PulseCard({ label, value, onClick }: { label: string; value: number; onClick: () => void }) {
+  return (
+    <button className="pulse-card" onClick={onClick}>
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </button>
   );
 }
 
