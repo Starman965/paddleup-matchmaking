@@ -403,10 +403,14 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-size: 12px;
   font-weight: 900;
 }
+.avatar.has-photo {
+  background: #0b1628;
+}
 .avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  background: #0b1628;
 }
 .avatar.empty {
   color: var(--pkl-muted);
@@ -537,7 +541,7 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-weight: 700;
   line-height: 1.25;
 }
-.account-panel button {
+.account-panel > button:not(.avatar-edit-button) {
   min-height: 34px;
   padding: 0 12px;
   border-radius: 14px;

@@ -1445,7 +1445,7 @@ function Segmented({ value, options, onChange }: { value: string; options: strin
 
 function Avatar({ user }: { user: User }) {
   return (
-    <div className="avatar" aria-label={`${user.firstName} ${user.lastName}`}>
+    <div className={`avatar ${user.photoUrl ? "has-photo" : ""}`} aria-label={`${user.firstName} ${user.lastName}`}>
       {user.photoUrl ? <img src={user.photoUrl} alt="" /> : initials(user)}
     </div>
   );
