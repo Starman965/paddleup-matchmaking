@@ -552,18 +552,65 @@ function App() {
       .finally(() => setAdminBusy(false));
   }
 
-  function snoozeMatching() {
+  function goOnline() {
     if (!firebaseUser) {
       setFirebaseStatus("Sign in first, then you can control your availability.");
       return;
     }
 
-    goOffline(firebaseUser.uid)
+    setAvailabilityMode("readyNow");
+    if (!beginMatchingFeedback("readyNow")) return;
+
+    trackEvent("availability_toggled_online", { durationMinutes: duration, locationId: activeLocation.id });
+    markReadyNow(firebaseUser.uid, activeLocation.id, duration)
       .then(() => {
-        setMatchFeedback(null);
-        setFirebaseStatus("You are offline. PaddleUp will not match you until you set availability.");
+        trackEvent("availability_created", { type: "readyNow", durationMinutes: duration, locationId: activeLocation.id });
+        setFirebaseStatus(`You are back online for ${duration} minutes.`);
       })
-      .catch((error: Error) => setFirebaseStatus(`Going offline failed: ${error.message}`));
+      .catch((error: Error) => {
+        setMatchFeedback({
+          type: "readyNow",
+          status: "error",
+          title: "Going Online Failed",
+          body: error.message
+        });
+        setFirebaseStatus(`Going online failed: ${error.message}`);
+      });
+  }
+
+  function goOfflineNow() {
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then you can control your availability.");
+      return;
+    }
+
+    const formingGame = activeMyGames.find((game) => game.status === "forming");
+    const offlineAction = formingGame ? leaveGame(formingGame.id) : goOffline(firebaseUser.uid);
+    if (formingGame) setLeavingGameId(formingGame.id);
+
+    offlineAction
+      .then(() => {
+        if (formingGame) trackEvent("game_left", { gameId: formingGame.id });
+        trackEvent("availability_toggled_offline", { locationId: activeLocation.id });
+        setMatchFeedback(null);
+        setFirebaseStatus(
+          formingGame
+            ? "You are offline and were removed from the forming game."
+            : "You are offline. PaddleUp will not match you until you go back online."
+        );
+      })
+      .catch((error: Error) => setFirebaseStatus(`Going offline failed: ${error.message}`))
+      .finally(() => {
+        if (formingGame) setLeavingGameId(null);
+      });
+  }
+
+  function togglePresence() {
+    if (currentPresence.tone === "offline") {
+      goOnline();
+      return;
+    }
+    goOfflineNow();
   }
 
   function saveProfilePhoto(photo: Blob) {
@@ -626,7 +673,7 @@ function App() {
               counts={livePulseCounts}
               onSetTab={setActiveTab}
               onMode={setAvailabilityMode}
-              onGoOffline={snoozeMatching}
+              onTogglePresence={togglePresence}
               onReadNotification={markOneNotificationRead}
             />
           )}
@@ -702,7 +749,7 @@ function App() {
               onSaveCourtDefaults={saveAdminCourtDefaults}
               onSaveWindow={saveWindowAvailability}
               presence={currentPresence}
-              onGoOffline={snoozeMatching}
+              onTogglePresence={togglePresence}
               onSaveProfilePhoto={saveProfilePhoto}
               photoUploading={photoUploading}
             />
@@ -756,7 +803,7 @@ function HomeScreen({
   counts,
   onSetTab,
   onMode,
-  onGoOffline,
+  onTogglePresence,
   onReadNotification
 }: {
   nextGame?: Game;
@@ -767,7 +814,7 @@ function HomeScreen({
   counts: ReturnType<typeof pulseCounts>;
   onSetTab: (tab: TabKey) => void;
   onMode: (mode: AvailabilityType) => void;
-  onGoOffline: () => void;
+  onTogglePresence: () => void;
   onReadNotification: (notificationId: string) => void;
 }) {
   const forming = games.filter((game) => game.status === "forming");
@@ -787,7 +834,7 @@ function HomeScreen({
 
   return (
     <div className="stack">
-      <StatusCard presence={presence} onGoOffline={onGoOffline} />
+      <StatusCard presence={presence} onTogglePresence={onTogglePresence} />
       <section className="hero-cta glass-panel">
         <Sparkles className="spark" size={24} />
         <p>Fastest path to a court</p>
@@ -1069,7 +1116,7 @@ function MeScreen({
   onSaveCourtDefaults,
   onSaveWindow,
   presence,
-  onGoOffline,
+  onTogglePresence,
   onSaveProfilePhoto,
   photoUploading
 }: {
@@ -1098,7 +1145,7 @@ function MeScreen({
   onSaveCourtDefaults: () => void;
   onSaveWindow: (type: "laterToday" | "tomorrow", startTime: string, endTime: string) => void;
   presence: UserPresence;
-  onGoOffline: () => void;
+  onTogglePresence: () => void;
   onSaveProfilePhoto: (photo: Blob) => Promise<void>;
   photoUploading: boolean;
 }) {
@@ -1110,7 +1157,7 @@ function MeScreen({
 
   return (
     <div className="stack">
-      <StatusCard presence={presence} onGoOffline={onGoOffline} />
+      <StatusCard presence={presence} onTogglePresence={onTogglePresence} />
       <section className="account-panel glass-panel">
         <Avatar user={currentUser} />
         <div>
@@ -1179,14 +1226,16 @@ function SectionTitle({ title, action, onClick }: { title: string; action?: stri
   );
 }
 
-function StatusCard({ presence, onGoOffline }: { presence: UserPresence; onGoOffline: () => void }) {
+function StatusCard({ presence, onTogglePresence }: { presence: UserPresence; onTogglePresence: () => void }) {
   return (
     <section className={`status-card glass-panel ${presence.tone}`}>
       <div>
         <span>{presence.label}</span>
         <strong>{presence.detail}</strong>
       </div>
-      {presence.tone !== "offline" && <button onClick={onGoOffline}>Go Offline</button>}
+      {presence.tone !== "matched" && (
+        <button onClick={onTogglePresence}>{presence.tone === "offline" ? "Go Online" : "Go Offline"}</button>
+      )}
     </section>
   );
 }
