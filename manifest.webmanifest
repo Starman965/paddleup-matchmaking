@@ -1,0 +1,16 @@
+{
+  "name": "PaddleUp Matchmaking",
+  "short_name": "PaddleUp",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7faf8",
+  "theme_color": "#f7faf8",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
