@@ -57,6 +57,11 @@ type UserPresence = {
   tone: "offline" | "available" | "matching" | "matched";
 };
 
+type WindowRange = {
+  start: Date;
+  end: Date;
+};
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
@@ -111,6 +116,30 @@ function gameTimeLabel(game: Game) {
   if (game.availabilityType === "laterToday") return "Later Today";
   if (game.availabilityType === "tomorrow") return "Tomorrow";
   return "Ready Now";
+}
+
+function gameWindow(game: Game): WindowRange | undefined {
+  const start = new Date(game.startsAt || game.meetTime || "");
+  if (Number.isNaN(start.getTime())) return undefined;
+
+  const parsedEnd = game.endsAt ? new Date(game.endsAt) : undefined;
+  const end =
+    parsedEnd && !Number.isNaN(parsedEnd.getTime()) && parsedEnd > start
+      ? parsedEnd
+      : new Date(start.getTime() + 2 * 60 * 60 * 1000);
+
+  return { start, end };
+}
+
+function windowsOverlap(windowA: WindowRange, windowB: WindowRange) {
+  return windowA.start < windowB.end && windowB.start < windowA.end;
+}
+
+function activeGameOverlappingWindow(games: Game[], window: WindowRange) {
+  return games.find((game) => {
+    const activeWindow = gameWindow(game);
+    return Boolean(activeWindow && windowsOverlap(window, activeWindow));
+  });
 }
 
 function matchDeadline(availability: Availability) {
@@ -435,7 +464,7 @@ function App() {
     if (!matchFeedback) return;
 
     const relevantActiveGame = activeMyGames.find(
-      (game) => (game.availabilityType ?? "readyNow") === matchFeedback.type || game.playerIds.includes(activeUserId)
+      (game) => (game.availabilityType ?? "readyNow") === matchFeedback.type
     );
     const hasRelevantAvailability = currentUserAvailability?.type === matchFeedback.type;
 
@@ -472,7 +501,7 @@ function App() {
     if (!matchFeedback || matchFeedback.status === "confirmed" || matchFeedback.status === "alreadyActive" || matchFeedback.status === "error") return;
 
     const matchingGame = activeMyGames.find(
-      (game) => (game.availabilityType ?? "readyNow") === matchFeedback.type || game.playerIds.includes(activeUserId)
+      (game) => (game.availabilityType ?? "readyNow") === matchFeedback.type
     );
     if (matchingGame) {
       const matchingStatus = matchingGame.status === "confirmed" ? "confirmed" : "forming";
@@ -578,17 +607,17 @@ function App() {
       .finally(() => setUpdatingStartTimeGameId(null));
   }
 
-  function beginMatchingFeedback(type: Exclude<AvailabilityType, "weekend">) {
-    const existingActiveGame = activeMyGames[0];
-    if (existingActiveGame) {
+  function beginMatchingFeedback(type: Exclude<AvailabilityType, "weekend">, requestedWindow: WindowRange) {
+    const overlappingGame = activeGameOverlappingWindow(activeMyGames, requestedWindow);
+    if (overlappingGame) {
       setMatchFeedback({
-        type: (existingActiveGame.availabilityType ?? type) as Exclude<AvailabilityType, "weekend">,
+        type: (overlappingGame.availabilityType ?? type) as Exclude<AvailabilityType, "weekend">,
         status: "alreadyActive",
-        title: "Already In A Game",
+        title: "Time Window Already Booked",
         body:
-          existingActiveGame.status === "confirmed"
-            ? "You already have a confirmed game. Check My Games for details."
-            : `${existingActiveGame.playerIds.length}/${existingActiveGame.requiredPlayers} players are already in your forming game.`
+          overlappingGame.status === "confirmed"
+            ? `You already have a confirmed game during ${gameTimeLabel(overlappingGame)}. Drop out first if you need to change that time.`
+            : `${overlappingGame.playerIds.length}/${overlappingGame.requiredPlayers} players are already in your forming game for ${gameTimeLabel(overlappingGame)}.`
       });
       return false;
     }
@@ -620,7 +649,7 @@ function App() {
       return;
     }
 
-    if (!beginMatchingFeedback(type)) return;
+    if (!beginMatchingFeedback(type, { start: new Date(startIso), end: new Date(endIso) })) return;
 
     trackEvent("availability_window_saved", { type, locationId: activeLocation.id });
     saveAvailabilityWindow(firebaseUser.uid, activeLocation.id, type, startIso, endIso)
@@ -646,7 +675,9 @@ function App() {
     }
 
     setAvailabilityMode("readyNow");
-    if (!beginMatchingFeedback("readyNow")) return;
+    const readyNowStart = new Date();
+    const readyNowEnd = new Date(readyNowStart.getTime() + durationMinutes * 60 * 1000);
+    if (!beginMatchingFeedback("readyNow", { start: readyNowStart, end: readyNowEnd })) return;
 
     if (currentUser.presence === "offline") {
       setUserPresence(firebaseUser.uid, "visible").catch((error: Error) => setFirebaseStatus(`Presence update failed: ${error.message}`));

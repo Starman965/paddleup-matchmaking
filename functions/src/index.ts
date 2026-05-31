@@ -59,6 +59,11 @@ type MatchSelection = {
   overlapEnd: Date;
 };
 
+type WindowRange = {
+  start: Date;
+  end: Date;
+};
+
 export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilityId}", async (event) => {
   const availabilityId = event.params.availabilityId;
   const after = event.data?.after;
@@ -125,24 +130,34 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     const confirmedSnapshot = await transaction.get(confirmedQuery);
     const formingDoc = formingSnapshot.docs.find((doc) => {
       const game = doc.data() as Partial<Game>;
-      return game.availabilityType === availabilityType || (!game.availabilityType && availabilityType === "readyNow");
+      const gameRange = gameWindow(game);
+      return (
+        (game.availabilityType === availabilityType || (!game.availabilityType && availabilityType === "readyNow")) &&
+        Boolean(gameRange && windowsOverlap(triggerWindow, gameRange))
+      );
     });
     const gameRef = formingDoc ? formingDoc.ref : db.collection("games").doc();
     const existing = formingDoc ? (formingDoc.data() as Game) : undefined;
     const existingPlayers = existing?.playerIds ?? [];
-    const activeGamePlayerIds = new Set<string>();
+    const activeGameConflicts = new Map<string, WindowRange[]>();
 
     for (const gameDoc of [...formingSnapshot.docs, ...confirmedSnapshot.docs]) {
       if (gameDoc.id === gameRef.id) continue;
       const game = gameDoc.data() as Partial<Game>;
+      const gameRange = gameWindow(game);
+      if (!gameRange) continue;
       for (const playerId of game.playerIds ?? []) {
-        activeGamePlayerIds.add(playerId);
+        const conflicts = activeGameConflicts.get(playerId) ?? [];
+        conflicts.push(gameRange);
+        activeGameConflicts.set(playerId, conflicts);
       }
     }
 
-    const selection = selectAvailabilityGroup(candidates, existingPlayers, activeGamePlayerIds, disabledPairs);
+    const selection = selectAvailabilityGroup(candidates, existingPlayers, activeGameConflicts, disabledPairs);
     const candidatePlayerIds = unique([...existingPlayers, ...candidates.map((candidate) => candidate.userId)]);
-    const skippedPlayerIds = candidatePlayerIds.filter((playerId) => activeGamePlayerIds.has(playerId));
+    const skippedPlayerIds = candidates
+      .filter((candidate) => hasOverlappingGame(candidate, activeGameConflicts))
+      .map((candidate) => candidate.userId);
 
     if (!selection || selection.playerIds.length === 0) {
       logger.info("No eligible players for doubles match update", {
@@ -501,12 +516,15 @@ function pairKey(userA: string, userB: string) {
 function selectAvailabilityGroup(
   candidates: AvailabilityCandidate[],
   existingPlayerIds: string[],
-  activeGamePlayerIds: Set<string>,
+  activeGameConflicts: Map<string, WindowRange[]>,
   disabledPairs: string[]
 ): MatchSelection | undefined {
   const candidateByUserId = new Map(candidates.map((candidate) => [candidate.userId, candidate]));
   const orderedPlayerIds = unique([...existingPlayerIds, ...candidates.map((candidate) => candidate.userId)]).filter(
-    (playerId) => candidateByUserId.has(playerId) && !activeGamePlayerIds.has(playerId)
+    (playerId) => {
+      const candidate = candidateByUserId.get(playerId);
+      return Boolean(candidate && !hasOverlappingGame(candidate, activeGameConflicts));
+    }
   );
   const selectedCandidates: AvailabilityCandidate[] = [];
   let overlapStart: Date | undefined;
@@ -538,6 +556,30 @@ function selectAvailabilityGroup(
     overlapStart,
     overlapEnd
   };
+}
+
+function gameWindow(game: Partial<Game>): WindowRange | undefined {
+  const startValue = game.startsAt ?? game.meetTime;
+  if (!startValue) return undefined;
+  const start = new Date(startValue);
+  if (Number.isNaN(start.getTime())) return undefined;
+
+  const parsedEnd = game.endsAt ? new Date(game.endsAt) : undefined;
+  const end =
+    parsedEnd && !Number.isNaN(parsedEnd.getTime()) && parsedEnd > start
+      ? parsedEnd
+      : new Date(start.getTime() + 2 * 60 * 60 * 1000);
+
+  return { start, end };
+}
+
+function hasOverlappingGame(candidate: AvailabilityCandidate, activeGameConflicts: Map<string, WindowRange[]>) {
+  const conflicts = activeGameConflicts.get(candidate.userId) ?? [];
+  return conflicts.some((conflict) => windowsOverlap(candidate, conflict));
+}
+
+function windowsOverlap(windowA: WindowRange, windowB: WindowRange) {
+  return windowA.start < windowB.end && windowB.start < windowA.end;
 }
 
 function assertAdmin(email: unknown) {
