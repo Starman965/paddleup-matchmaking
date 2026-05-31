@@ -367,6 +367,7 @@ function App() {
 
   const userById = useMemo(() => new Map(allUsers.map((user) => [user.uid, user])), [allUsers]);
   const activeUserId = firebaseUser?.uid || currentUserId;
+  const liveCurrentUser = firebaseUser ? liveUsers.find((user) => user.uid === firebaseUser.uid) : undefined;
   const currentUser = userById.get(activeUserId) || (firebaseUser ? userFromFirebase(firebaseUser, activeLocation.id) : seedUsers[0]);
   const onlinePlayerCount = allUsers.filter((user) => user.presence !== "offline").length;
   const onlinePlayers = useMemo(
@@ -464,12 +465,13 @@ function App() {
       return;
     }
     if (durationHydratedForUser === activeUserId) return;
-    const savedDuration = currentUser.defaultReadyNowDuration;
+    if (!liveCurrentUser) return;
+    const savedDuration = liveCurrentUser.defaultReadyNowDuration;
     if ([30, 60, 90, 120].includes(savedDuration ?? 0)) {
       setDuration(savedDuration!);
     }
     setDurationHydratedForUser(activeUserId);
-  }, [activeUserId, currentUser.defaultReadyNowDuration, durationHydratedForUser, firebaseUser]);
+  }, [activeUserId, durationHydratedForUser, firebaseUser, liveCurrentUser]);
 
   useEffect(() => {
     if (!matchFeedback) return;
