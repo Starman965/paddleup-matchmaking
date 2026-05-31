@@ -136,17 +136,6 @@ function matchDeadlineLabel(availability: Availability | undefined, nowMs: numbe
   return `Time remaining: ${formatCountdown(deadline, nowMs)}. By ${formatTime(deadline.toISOString())}`;
 }
 
-function pulseCounts(availability: Availability[], games: Game[]) {
-  const now = Date.now();
-  const active = availability.filter((item) => !item.expiresAt || new Date(item.expiresAt).getTime() > now);
-  return {
-    readyNow: active.filter((item) => item.type === "readyNow").length,
-    laterToday: active.filter((item) => item.type === "laterToday").length,
-    tomorrow: active.filter((item) => item.type === "tomorrow").length,
-    formingGames: games.filter((game) => game.status === "forming").length
-  };
-}
-
 function initials(user: User) {
   const first = user.firstName?.[0] || "P";
   const last = user.lastName?.[0] || "";
@@ -429,7 +418,6 @@ function App() {
     }
     return { label: "Want a Match?", detail: "Click Find Me Playmates to play ASAP, or choose a later time.", tone: "offline" };
   }, [activeMyGames, currentUser.presence, currentUserAvailability, nowMs]);
-  const livePulseCounts = useMemo(() => pulseCounts(liveAvailability, displayGames), [displayGames, liveAvailability]);
   useEffect(() => {
     if (!firebaseUser) {
       setDurationHydratedForUser(null);
@@ -881,7 +869,6 @@ function App() {
               games={displayGames}
               userById={userById}
               presence={currentPresence}
-              counts={livePulseCounts}
               matchFeedback={matchFeedback}
               onSetTab={setActiveTab}
               onChooseAvailability={chooseHomeAvailability}
@@ -1020,7 +1007,6 @@ function HomeScreen({
   games,
   userById,
   presence,
-  counts,
   matchFeedback,
   onSetTab,
   onChooseAvailability,
@@ -1031,7 +1017,6 @@ function HomeScreen({
   games: Game[];
   userById: Map<string, User>;
   presence: UserPresence;
-  counts: ReturnType<typeof pulseCounts>;
   matchFeedback: MatchFeedback | null;
   onSetTab: (tab: TabKey) => void;
   onChooseAvailability: (mode: Exclude<AvailabilityType, "weekend">) => void;
@@ -1062,13 +1047,6 @@ function HomeScreen({
       </section>
 
       {matchFeedback && <MatchFeedbackCard feedback={matchFeedback} />}
-
-      <section className="pulse-grid">
-        <PulseCard label="Ready Now" value={counts.readyNow} onClick={() => onChooseAvailability("readyNow")} />
-        <PulseCard label="Later Today" value={counts.laterToday} onClick={() => onChooseAvailability("laterToday")} />
-        <PulseCard label="Tomorrow" value={counts.tomorrow} onClick={() => onChooseAvailability("tomorrow")} />
-        <PulseCard label="Forming" value={counts.formingGames} onClick={() => onSetTab("games")} />
-      </section>
 
       {nextGame && (
         <section className="glass-panel">
@@ -1526,15 +1504,6 @@ function StatusCard({ presence, game, userById }: { presence: UserPresence; game
         </div>
       )}
     </section>
-  );
-}
-
-function PulseCard({ label, value, onClick }: { label: string; value: number; onClick: () => void }) {
-  return (
-    <button className="pulse-card" onClick={onClick}>
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </button>
   );
 }
 
