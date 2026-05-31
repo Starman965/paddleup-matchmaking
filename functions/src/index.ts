@@ -11,6 +11,7 @@ const db = getFirestore();
 const REQUIRED_DOUBLES_PLAYERS = 4;
 const DEFAULT_MEET_DELAY_MINUTES = 30;
 const MATCH_LEAD_TIME_MINUTES = 30;
+const MINIMUM_MATCH_OVERLAP_MINUTES = 30;
 const GAME_CLOSE_GRACE_MINUTES = 15;
 const ADMIN_EMAILS = new Set(["demandgendave@gmail.com"]);
 
@@ -135,7 +136,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       const gameRange = gameWindow(game);
       return (
         (game.availabilityType === availabilityType || (!game.availabilityType && availabilityType === "readyNow")) &&
-        Boolean(gameRange && windowsOverlap(triggerWindow, gameRange))
+        Boolean(gameRange && hasMinimumOverlap(triggerWindow, gameRange, MINIMUM_MATCH_OVERLAP_MINUTES))
       );
     });
     const gameRef = formingDoc ? formingDoc.ref : db.collection("games").doc();
@@ -159,7 +160,6 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     const selectionCandidates = [...candidates];
     if (existingWindow) {
       for (const playerId of existingPlayers) {
-        if (selectionCandidates.some((candidate) => candidate.userId === playerId)) continue;
         selectionCandidates.push({
           userId: playerId,
           availabilityId: `${gameRef.id}_${playerId}_directJoin`,
@@ -168,7 +168,8 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       }
     }
 
-    const selection = selectAvailabilityGroup(selectionCandidates, existingPlayers, activeGameConflicts, disabledPairs);
+    const matchWindow = existingWindow ?? triggerWindow;
+    const selection = selectAvailabilityGroup(selectionCandidates, existingPlayers, activeGameConflicts, disabledPairs, matchWindow);
     const candidatePlayerIds = unique([...existingPlayers, ...candidates.map((candidate) => candidate.userId)]);
     const skippedPlayerIds = candidates
       .filter((candidate) => hasOverlappingGame(candidate, activeGameConflicts))
@@ -195,10 +196,10 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       status === "confirmed"
         ? availabilityType === "readyNow"
           ? new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000).toISOString()
-          : selection.overlapStart.toISOString()
+          : matchWindow.start.toISOString()
         : undefined;
-    const startsAt = meetTime ?? selection.overlapStart.toISOString();
-    const endsAt = selection.overlapEnd.toISOString();
+    const startsAt = meetTime ?? matchWindow.start.toISOString();
+    const endsAt = matchWindow.end.toISOString();
 
     const game: Game = {
       id: gameRef.id,
@@ -686,18 +687,21 @@ function selectAvailabilityGroup(
   candidates: AvailabilityCandidate[],
   existingPlayerIds: string[],
   activeGameConflicts: Map<string, WindowRange[]>,
-  disabledPairs: string[]
+  disabledPairs: string[],
+  matchWindow: WindowRange
 ): MatchSelection | undefined {
   const candidateByUserId = new Map(candidates.map((candidate) => [candidate.userId, candidate]));
   const orderedPlayerIds = unique([...existingPlayerIds, ...candidates.map((candidate) => candidate.userId)]).filter(
     (playerId) => {
       const candidate = candidateByUserId.get(playerId);
-      return Boolean(candidate && !hasOverlappingGame(candidate, activeGameConflicts));
+      return Boolean(
+        candidate &&
+        !hasOverlappingGame(candidate, activeGameConflicts) &&
+        hasMinimumOverlap(candidate, matchWindow, MINIMUM_MATCH_OVERLAP_MINUTES)
+      );
     }
   );
   const selectedCandidates: AvailabilityCandidate[] = [];
-  let overlapStart: Date | undefined;
-  let overlapEnd: Date | undefined;
 
   for (const playerId of orderedPlayerIds) {
     const candidate = candidateByUserId.get(playerId);
@@ -706,24 +710,18 @@ function selectAvailabilityGroup(
     const compatible = selectedCandidates.every((selected) => !disabledPairs.includes(pairKey(candidate.userId, selected.userId)));
     if (!compatible) continue;
 
-    const nextOverlapStart = new Date(Math.max(overlapStart?.getTime() ?? candidate.start.getTime(), candidate.start.getTime()));
-    const nextOverlapEnd = new Date(Math.min(overlapEnd?.getTime() ?? candidate.end.getTime(), candidate.end.getTime()));
-    if (nextOverlapEnd <= nextOverlapStart) continue;
-
     selectedCandidates.push(candidate);
-    overlapStart = nextOverlapStart;
-    overlapEnd = nextOverlapEnd;
 
     if (selectedCandidates.length >= REQUIRED_DOUBLES_PLAYERS) break;
   }
 
-  if (!overlapStart || !overlapEnd) return undefined;
+  if (selectedCandidates.length === 0) return undefined;
 
   return {
     playerIds: selectedCandidates.map((candidate) => candidate.userId),
     availabilityIds: selectedCandidates.map((candidate) => candidate.availabilityId),
-    overlapStart,
-    overlapEnd
+    overlapStart: matchWindow.start,
+    overlapEnd: matchWindow.end
   };
 }
 
@@ -749,6 +747,16 @@ function hasOverlappingGame(candidate: AvailabilityCandidate, activeGameConflict
 
 function windowsOverlap(windowA: WindowRange, windowB: WindowRange) {
   return windowA.start < windowB.end && windowB.start < windowA.end;
+}
+
+function overlapMinutes(windowA: WindowRange, windowB: WindowRange) {
+  const overlapStart = Math.max(windowA.start.getTime(), windowB.start.getTime());
+  const overlapEnd = Math.min(windowA.end.getTime(), windowB.end.getTime());
+  return Math.max(0, Math.floor((overlapEnd - overlapStart) / 60000));
+}
+
+function hasMinimumOverlap(windowA: WindowRange, windowB: WindowRange, minimumMinutes: number) {
+  return overlapMinutes(windowA, windowB) >= minimumMinutes;
 }
 
 function assertAdmin(email: unknown) {
