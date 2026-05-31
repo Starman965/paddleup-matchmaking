@@ -42,6 +42,7 @@ const locationById = new Map(locations.map((location) => [location.id, location]
 const defaultCourtOptions = Array.from({ length: 10 }, (_, index) => `Court ${index + 1}`);
 const adminEmails = new Set(["demandgendave@gmail.com"]);
 const matchLeadTimeMinutes = 30;
+const gameCloseGraceMinutes = 15;
 
 type MatchFeedback = {
   type: Exclude<AvailabilityType, "weekend">;
@@ -141,6 +142,13 @@ function activeGameOverlappingWindow(games: Game[], window: WindowRange) {
     const activeWindow = gameWindow(game);
     return Boolean(activeWindow && windowsOverlap(window, activeWindow));
   });
+}
+
+function isPastGameCloseGrace(game: Game, nowMs: number) {
+  if (game.status !== "forming" && game.status !== "confirmed") return false;
+  const window = gameWindow(game);
+  if (!window) return false;
+  return window.end.getTime() + gameCloseGraceMinutes * 60 * 1000 <= nowMs;
 }
 
 function matchDeadline(availability: Availability) {
@@ -395,9 +403,10 @@ function App() {
 
   const displayGames = useMemo(
     () => {
-      return firebaseUser ? liveGames : seedGames;
+      const sourceGames = firebaseUser ? liveGames : seedGames;
+      return sourceGames.filter((game) => !isPastGameCloseGrace(game, nowMs));
     },
-    [firebaseUser, liveGames]
+    [firebaseUser, liveGames, nowMs]
   );
   const myGames = useMemo(
     () => displayGames.filter((game) => game.playerIds.includes(activeUserId)),

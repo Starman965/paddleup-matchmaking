@@ -2,6 +2,7 @@ import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { logger } from "firebase-functions";
 
 initializeApp();
@@ -10,6 +11,7 @@ const db = getFirestore();
 const REQUIRED_DOUBLES_PLAYERS = 4;
 const DEFAULT_MEET_DELAY_MINUTES = 30;
 const MATCH_LEAD_TIME_MINUTES = 30;
+const GAME_CLOSE_GRACE_MINUTES = 15;
 const ADMIN_EMAILS = new Set(["demandgendave@gmail.com"]);
 
 type Availability = {
@@ -252,6 +254,40 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       locationId: availability.locationId
     });
   });
+});
+
+export const closeExpiredGames = onSchedule("every 5 minutes", async () => {
+  const closeBefore = new Date(Date.now() - GAME_CLOSE_GRACE_MINUTES * 60 * 1000);
+  const snapshots = await Promise.all([
+    db.collection("games").where("status", "==", "forming").get(),
+    db.collection("games").where("status", "==", "confirmed").get()
+  ]);
+  const expiredDocs = snapshots
+    .flatMap((snapshot) => snapshot.docs)
+    .filter((doc) => {
+      const window = gameWindow(doc.data() as Partial<Game>);
+      return Boolean(window && window.end <= closeBefore);
+    });
+
+  for (let index = 0; index < expiredDocs.length; index += 450) {
+    const batch = db.batch();
+    expiredDocs.slice(index, index + 450).forEach((doc) => {
+      batch.update(doc.ref, {
+        status: "completed",
+        completedAt: FieldValue.serverTimestamp(),
+        closedReason: "expired",
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    });
+    await batch.commit();
+  }
+
+  if (expiredDocs.length > 0) {
+    logger.info("Closed expired games", {
+      count: expiredDocs.length,
+      closeBefore: closeBefore.toISOString()
+    });
+  }
 });
 
 export const assignCourt = onCall(async (request) => {
