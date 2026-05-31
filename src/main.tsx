@@ -1144,8 +1144,10 @@ function HomeScreen({
     <div className="stack">
       <StatusCard presence={presence} game={activeGame} userById={userById} />
       <section className="hero-cta glass-panel">
-        <Sparkles className="spark" size={24} />
-        <p>Want to play now or soon?</p>
+        <div className="hero-title">
+          <Sparkles className="spark" size={24} />
+          <p>Want to play now or soon?</p>
+        </div>
         <button className="hero-primary" onClick={() => onChooseAvailability("readyNow")}>
           <strong>Find Me Playmates</strong>
           <span>Click to get a match ASAP. Or below for later/tomorrow.</span>

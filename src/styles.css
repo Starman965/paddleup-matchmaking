@@ -252,11 +252,18 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
 
 .hero-cta {
   position: relative;
-  padding: 22px;
+  padding: 18px 22px 22px;
   overflow: hidden;
   text-align: center;
 }
-.hero-cta p { margin: 0 0 14px; color: var(--pkl-text); font-weight: 900; font-size: 20px; }
+.hero-title {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.hero-title p { margin: 0; color: var(--pkl-text); font-weight: 900; font-size: 20px; }
 .hero-primary {
   width: 100%;
   min-height: 74px;
@@ -279,7 +286,10 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-size: 11px;
   font-weight: 850;
 }
-.spark { color: var(--pkl-yellow); margin-bottom: 7px; }
+.spark {
+  flex: 0 0 auto;
+  color: var(--pkl-yellow);
+}
 .mode-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
 .mode-row button, .segmented button, .ghost-action {
   min-height: 40px;
