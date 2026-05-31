@@ -1,69 +1,28 @@
 # PaddleUp Matchmaking - Developer Handoff
 
-Last updated: May 30, 2026
-
-## Latest Update - May 30, 2026
-
-The product model was simplified to match the intended Uber/OpenTable analogy:
-
-- Users are always requesting a match.
-- The only difference is timing: `Ready Now`, `Later Today`, or `Tomorrow`.
-- Future availability is no longer treated as a separate user-facing concept from matchmaking.
-- Home should not show both `Future Matches` and `Games Forming`; that created confusion because both looked like partial games.
-- Home now uses one concept: `Matches Forming`.
-
-Rationale:
-
-- `Ready Now` is an immediate match request.
-- `Later Today` and `Tomorrow` are scheduled match requests.
-- Once a user submits any of those, PaddleUp should start matchmaking immediately for that requested play window.
-- A match becomes `confirmed` only when capacity is reached.
-
-Implementation notes from this update:
-
-- Removed the Home `Future Matches` section.
-- Renamed `Games Forming` to `Matches Forming`.
-- Forming match cards now display timing context:
-  - `Ready Now`
-  - `Today · 1:00 PM-5:00 PM`
-  - `Tomorrow · 11:00 AM-12:00 PM`
-- Forming games now store `startsAt` and `endsAt` so the UI can show the requested play window.
-- Older forming games without stored time data avoid faking a current timestamp.
-- `defaultReadyNowDuration` is now stored on `users/{uid}` and hydrated on reload.
-- A 30-minute `Ready Now` request is valid; the backend lead-time cutoff applies only to future windows.
-- Confirmed game start-time edits now reject past times.
-- First-time sign-in now upserts the user profile before setting presence.
-
-Current intended Home hierarchy:
-
-1. User status / active match status
-2. Primary CTA: `Find Me Playmates`
-3. Timing choices: `Later Today`, `Tomorrow`
-4. Pulse counts
-5. `Next Game`, if confirmed
-6. `Matches Forming`
-
-Cursor should preserve this mental model unless the product direction changes explicitly.
+Last updated: May 31, 2026
 
 ## Executive Summary
 
-PaddleUp Matchmaking is a mobile-first React/TypeScript PWA for real-time pickleball availability and matchmaking.
+PaddleUp Matchmaking is a mobile-first React/TypeScript/Firebase PWA for real-time pickleball matchmaking.
 
 The MVP is launching around one active location:
 
 - `blackhawk` - Blackhawk Country Club
 
-Important architecture decision: do not hard-code Blackhawk into the data model. Every user, availability record, game, and future matching decision should reference `locationId`. The app currently has one location, but the data model is intentionally location-first so it can later support public courts, resorts, vacation destinations, country clubs, nearby matching, and GPS-based discovery.
+Important architecture decision: do not hard-code Blackhawk into the domain model. Every user, availability record, game, and future matching decision should reference `locationId`. The app has one live location today, but the data model is intentionally location-first so it can later support public courts, resorts, vacation destinations, country clubs, nearby matching, and GPS-based discovery.
 
-The product is not intended to be a scheduling app, event system, chat app, ladder app, or open-play manager. The core value proposition is:
+The product is not a scheduling app, event system, chat app, ladder app, or open-play manager. The product is an intent-driven matchmaking tool.
+
+Core value proposition:
 
 > Time from "I want to play" to "I have a game."
 
-The app should continue to revolve around the giant Home CTA:
+The Home experience should continue to revolve around one giant CTA:
 
-> I Want to Play
+> Find Me Playmates
 
-That button is the product's "request ride" moment.
+That CTA is the product's "request ride" moment.
 
 ## Live Project
 
@@ -74,7 +33,7 @@ GitHub:
 Live Firebase Hosting:
 
 - `https://paddleup-match-maker.web.app`
-- Firebase also serves the same app at `https://paddleup-match-maker.firebaseapp.com`
+- `https://paddleup-match-maker.firebaseapp.com`
 
 Firebase project:
 
@@ -83,20 +42,90 @@ Firebase project:
 - Firestore: active
 - Cloud Functions: active
 - Hosting: active
-- Messaging/FCM: not yet wired into product behavior
+- Messaging/FCM: not wired into product behavior yet
 
 Current branch:
 
 - `main`
 
-Recent commits:
+Latest known deployed state:
 
-- `7598361 Add court assignment function`
-- `0a7d038 Read live Firestore games in UI`
-- `866a72a Add ready now doubles matchmaking`
-- `0964899 Refresh PWA cache behavior`
-- `34354bf Add Firestore availability rules`
-- `c843a2a Wire Firebase hosting and auth`
+- Hosting is live.
+- Functions are live.
+- Latest backend-only deploy updated Cloud Functions after commit `56f1240`.
+- Latest known commit: `56f1240 Preserve forming game windows`.
+
+## Product Model
+
+PaddleUp has one matchmaking concept:
+
+- A player wants to play.
+
+The timing can be:
+
+- `Ready Now`
+- `Later Today`
+- `Tomorrow`
+
+Do not split future requests into a separate user-facing concept like "future matches" versus "forming games." That confused QA because both were really partial matches. The current product language should be:
+
+- `Matches Forming`
+- `Getting Matched`
+- `Confirmed`
+
+Mental model:
+
+- `Ready Now` means matchmaking starts immediately for an immediate play window.
+- `Later Today` means matchmaking starts immediately for a later play window.
+- `Tomorrow` means matchmaking starts immediately for tomorrow's requested play window.
+- A match becomes `confirmed` only when capacity is reached.
+- MVP default match type is doubles, requiring 4 players.
+
+MVP priority:
+
+- Doubles first. The first Blackhawk users are expected to want doubles and mixed doubles.
+
+Not MVP:
+
+- DUPR integration
+- Skill filtering
+- Public courts
+- Resort mode
+- Nearby players
+- GPS matching
+- Auto-generated locations
+- Learning engine
+- Preferred partners
+- Court reservations
+- Club integrations
+- WhatsApp replacement
+- Group play
+- Open play
+- Round robins
+- Drills
+
+## Stack
+
+Frontend:
+
+- React
+- TypeScript
+- Vite
+- Lucide icons
+- Custom mobile-first CSS
+- PWA manifest and service worker
+
+Backend:
+
+- Firebase Authentication
+- Firestore
+- Firebase Cloud Functions v2
+- Firebase Hosting
+
+Future:
+
+- Firebase Cloud Messaging for push notifications
+- Native iOS wrapper or native app only if install/push friction becomes a real MVP blocker
 
 ## Local Development
 
@@ -129,154 +158,145 @@ npm run build
 Deploy hosting:
 
 ```bash
-firebase deploy --only hosting --project paddleup-match-maker
+FIREBASE_CLI_UPDATE_NOTIFIER=false firebase deploy --only hosting --project paddleup-match-maker
 ```
 
 Deploy functions:
 
 ```bash
-firebase deploy --only functions --project paddleup-match-maker
+FIREBASE_CLI_UPDATE_NOTIFIER=false firebase deploy --only functions --project paddleup-match-maker
+```
+
+Deploy both:
+
+```bash
+FIREBASE_CLI_UPDATE_NOTIFIER=false firebase deploy --only functions,hosting --project paddleup-match-maker
 ```
 
 Deploy rules:
 
 ```bash
-firebase deploy --only firestore:rules --project paddleup-match-maker
+FIREBASE_CLI_UPDATE_NOTIFIER=false firebase deploy --only firestore:rules --project paddleup-match-maker
 ```
 
-## Stack
+Live smoke check:
+
+```bash
+curl -I https://paddleup-match-maker.web.app
+```
+
+## Important Files
 
 Frontend:
 
-- React
-- TypeScript
-- Vite
-- CSS with Tailwind import, mostly custom CSS
-- Lucide icons
-- Mobile-first PWA
+- `src/main.tsx` - main React app, state wiring, view composition
+- `src/firebase.ts` - Firebase initialization
+- `src/firebaseDb.ts` - Firestore subscriptions and callable wrappers
+- `src/domain.ts` - shared TypeScript domain types
+- `src/data.ts` - sample fallback data
+- `src/styles.css` - mobile app shell and visual styling
+- `public/manifest.webmanifest` - PWA manifest
+- `public/sw.js` - service worker cache behavior
 
 Backend:
 
-- Firebase Authentication
-- Firestore
-- Firebase Cloud Functions v2
-- Firebase Hosting
+- `functions/src/index.ts` - Cloud Functions and matchmaking logic
+- `functions/package.json` - Functions dependencies/runtime
 
-Future:
+Firebase:
 
-- Firebase Cloud Messaging for push notifications
-- Possibly iOS wrapper/native app later, but PWA is currently the fastest path for MVP testing
+- `firebase.json` - Hosting config and cache headers
+- `firestore.rules` - Firestore security rules
+- `storage.rules` - Storage rules
 
-## Product Requirements Snapshot
+## Current User Flows
 
-MVP goal:
+### Sign In
 
-- Launch to 20-30 Blackhawk players
-- Determine whether availability-based matching beats WhatsApp coordination
+- Google Sign-In only.
+- On sign-in, the app upserts `users/{uid}`.
+- The user profile includes `uid`, `firstName`, `lastName`, `email`, `photoUrl`, `locationId`, `presence`, and app preferences such as `defaultReadyNowDuration`.
 
-Success metrics:
+### Home
 
-- At least 10 active weekly users
-- At least 20 games formed through the app
-- Average Ready Now formation time under 30 minutes
-- Matchmaking should occur at least 30 minutes before a player's availability expires so confirmed players still have enough usable play time. This is currently a code-level MVP default; future admin tools should make this configurable per `locationId`.
+Home currently prioritizes:
 
-Core navigation:
+1. Player/location header
+2. Active selected/own match status, if applicable
+3. Primary CTA: `Find Me Playmates`
+4. Secondary timing buttons: `Later Today`, `Tomorrow`
+5. `Matches Forming`
 
-- Home
-- Players
-- My Games
-- Me
+Recent UX decisions:
 
-MVP match types:
+- Removed the old pulse count cards (`Ready Now`, `Later Today`, `Tomorrow`, `Forming`) for MVP because they were not obvious enough to the user.
+- Removed the confusing distinction between `Future Matches` and `Games Forming`.
+- All open requests now appear as `Matches Forming`.
+- Cards must show play-window context so the user knows whether they can join.
 
-- Doubles, 4 players
-- Singles, 2 players, but this is not yet implemented in the backend
+Ready Now card labeling:
 
-Current practical priority:
+- Show the expiration window, not only `Ready Now`.
+- Examples:
+  - `Ready Now - until 12:48 PM`
+  - `Ready Now - 12 min left`
+  - `Ready Now - closing now`
 
-- Doubles first. The initial users are expected to want doubles and mixed doubles.
+Future card labeling:
 
-Not MVP:
+- Show day and range.
+- Examples:
+  - `Today - 1:00 PM-5:00 PM`
+  - `Tomorrow - 11:00 AM-12:00 PM`
 
-- DUPR integration
-- Skill filtering
-- Public courts
-- Resort mode
-- Nearby players
-- GPS matching
-- Auto-generated locations
-- Learning engine
-- Preferred partners
-- Court reservations
-- Club integrations
-- WhatsApp replacement
-- Group play
-- Open play
-- Round robins
-- Drills
+### Me
 
-## Current App Behavior
+- User can set default Ready Now duration: `30`, `60`, `90`, or `120` minutes.
+- This preference is stored on `users/{uid}.defaultReadyNowDuration`.
+- Hydration must wait for the live Firestore user record before falling back to local defaults. A prior bug caused the UI to revert to `60` after sign-out/sign-in because local state won the race.
 
-Authentication:
+### My Games
 
-- Google Sign-In only
-- On sign-in, app upserts `users/{uid}`
-- Captures:
-  - `uid`
-  - `firstName`
-  - `lastName`
-  - `email`
-  - `photoUrl`
-  - `locationId`
-  - `presence` (`visible` or `offline`)
+- Shows selected/active game, forming games, and confirmed games.
+- Selected game is derived only from the current user's live games.
+- After dropping out, the selected game should disappear immediately without requiring pull-to-refresh.
+- The row under player avatars should show participating player names, not redundant "Need X more" text.
+- Use `First L.` format separated with dots, for example: `Ira R. - David L. - Beth M.`
 
-Home:
+### Direct Join
 
-- Shows a large `I Want to Play` CTA
-- Shows user's next confirmed game if signed in and a live game exists
-- Shows live availability counts and joinable future Today/Tomorrow windows
-- Shows games forming
-- Signed-out state uses sample data so the app still looks presentable
+- Users can join an open forming match directly from the card.
+- They should not be forced to publish new availability first.
+- Direct join is valid because the user is explicitly accepting the displayed play window.
+- Backend still validates:
+  - signed-in user
+  - forming game
+  - capacity not full
+  - no overlapping active game for that user
+  - playmate exclusions
 
-Me:
+### Drop Out
 
-- User can switch visibility between visible/offline without signing out
-- Offline hides the user from player lists and future availability marketplace cards, but does not remove them from games
-- User can set default Ready Now duration:
-  - 30 minutes
-  - 60 minutes
-  - 90 minutes
-  - 120 minutes
-- Home availability actions write `availability/{uid}_readyNow`, `availability/{uid}_laterToday`, or `availability/{uid}_tomorrow`
-- Backend Cloud Function reacts and creates/updates a forming doubles game
+- Dropping out removes the user from the game.
+- The UI should update immediately by clearing the selected game and deriving visible games from live `myGames`.
+- If the drop causes a confirmed game to fall below capacity, backend behavior should keep the game consistent and notify remaining players.
 
-My Games:
+### Court Assignment
 
-- Reads real Firestore `games` after sign-in
-- Shows forming and confirmed games
-- Confirmed game `Court TBD` pill now calls the backend `assignCourt` function
-- Confirmed games allow any player to adjust the start time in 15-minute increments
+- Any player in a game should be able to assign a court.
+- The assign-court affordance should be visible on game cards when a game needs a court, especially confirmed games.
+- Earlier UI hard-coded `Court 4`; current/future UI should use a simple picker or prompt.
+- Backend accepts a court string through the `assignCourt` callable.
 
-Players:
+Product nuance:
 
-- Live users are merged into the app's known user map after sign-in
-- Offline users are hidden from player lists except the current user's own row
-- Playmate add/remove is local UI state only right now; Firestore rules are ready for `playmates`, but the UI is not fully wired to persist it
-
-Notifications:
-
-- App reads real Firestore `notifications` for the signed-in user
-- Bell count shows unread notifications
-- Latest updates display on Home
-- Mark-as-read UI is not implemented yet
-- Browser/mobile push notifications are not implemented yet
+- It is acceptable to assign a court before the game is fully confirmed if a real-world court is known, but the most obvious MVP placement is on confirmed or selected game cards where it is actionable.
 
 ## Firestore Collections
 
 ### `locations`
 
-Current doc:
+Current seeded doc:
 
 ```json
 {
@@ -297,17 +317,24 @@ Current doc:
   "photoUrl": "",
   "locationId": "blackhawk",
   "presence": "visible",
+  "defaultReadyNowDuration": 60,
   "updatedAt": "serverTimestamp"
 }
 ```
 
 ### `availability`
 
-Ready Now doc ID convention:
+Doc ID convention:
 
 ```text
-{uid}_readyNow
+{uid}_{type}
 ```
+
+Examples:
+
+- `{uid}_readyNow`
+- `{uid}_laterToday`
+- `{uid}_tomorrow`
 
 Shape:
 
@@ -337,6 +364,9 @@ Current backend supports doubles:
   "requiredPlayers": 4,
   "playerIds": [],
   "formedFromAvailabilityIds": [],
+  "availabilityType": "readyNow",
+  "startsAt": "",
+  "endsAt": "",
   "meetTime": "",
   "court": null,
   "createdAt": "serverTimestamp",
@@ -347,10 +377,15 @@ Current backend supports doubles:
 When 4 players are reached:
 
 - `status` becomes `confirmed`
-- `meetTime` is set to now plus 30 minutes
+- `meetTime` defaults to now plus 30 minutes
 - `court` stays `null` until assigned
 - `gameConfirmed` notifications are created
-- Availability that expires inside the 30-minute match lead-time buffer is ignored for new matching. Future admin tools should expose this match lead-time buffer as a per-location setting.
+
+Completed/expired behavior:
+
+- A scheduled function runs every 5 minutes.
+- Forming and confirmed games are closed after the game window ends plus a 15-minute grace period.
+- The frontend also filters stale games locally after `endsAt + 15 minutes` so old games disappear before the scheduled cleanup necessarily runs.
 
 ### `notifications`
 
@@ -372,11 +407,15 @@ Current notification types:
 - `formingGame`
 - `gameConfirmed`
 - `courtAssigned`
-- `playerLeft` type exists in TypeScript but is not implemented yet
+- `playerLeft`
+
+Browser/mobile push notifications are not implemented yet. Current notifications are Firestore in-app notifications.
 
 ### `playmates`
 
-Rules exist, but app persistence is not fully wired yet.
+Rules and backend logic expect playmate exclusions.
+
+Desired shape:
 
 ```json
 {
@@ -388,11 +427,9 @@ Rules exist, but app persistence is not fully wired yet.
 
 Desired behavior:
 
-- Default: all players are playmates
-- User can remove a playmate
-- Matchmaking excludes removed playmates
-
-This exclusion is not yet implemented in the backend.
+- Default: all players are playmates.
+- If A removes B, A should not be matched with B.
+- Exclusion should apply even if only one side removed the other.
 
 ## Cloud Functions
 
@@ -402,32 +439,81 @@ Source:
 
 ### `matchReadyNowDoubles`
 
+Name is now stale. It handles more than Ready Now, but the function name has not been renamed yet.
+
 Trigger:
 
 - Firestore v2 `onDocumentWritten("availability/{availabilityId}")`
 
+Current behavior:
+
+1. Ignore invalid or expired availability.
+2. Ignore availability that does not leave enough useful play time.
+3. Query active availability at the same `locationId`.
+4. Find an existing compatible forming doubles game or create one.
+5. Merge eligible players into the game.
+6. Confirm the game when `playerIds.length >= 4`.
+7. Create in-app notifications.
+
+Important matching rule added May 31:
+
+- The first forming game owns/preserves the proposed play window.
+- Later players can join that game if their availability overlaps the game window by at least 30 minutes.
+- Later players must not shrink or mutate the original `startsAt`/`endsAt`.
+
+Example:
+
+- Player A creates tomorrow `11:00 AM-12:00 PM`.
+- Player B creates tomorrow `10:00 AM-11:30 AM`.
+- They can match because overlap is 30 minutes.
+- The game remains `11:00 AM-12:00 PM`.
+
+Another example:
+
+- Player A creates `12:00 PM-2:00 PM`.
+- Player B creates `12:00 PM-12:49 PM`.
+- They can match because overlap is at least 30 minutes.
+- The game remains `12:00 PM-2:00 PM`.
+
+Implementation details:
+
+- `MINIMUM_MATCH_OVERLAP_MINUTES = 30`.
+- Existing forming games are matched with `hasMinimumOverlap(...)`.
+- `selectAvailabilityGroup(...)` checks each candidate against the preserved game window.
+- Existing direct-joined players are kept anchored to the existing game window so recalculation does not drop them.
+
+Current caveat:
+
+- The rule is individual overlap with the base game window, not strict common overlap among every player. For a long original window, one player could overlap the early part and another the late part. This matches the current MVP decision but may need refinement if real users find it confusing.
+
+### `joinGame`
+
+Callable HTTPS function.
+
 Behavior:
 
-1. Ignore non-matchable availability.
-2. Ignore expired, invalid, or too-tight availability that cannot satisfy the 30-minute match lead-time buffer.
-3. Query all active availability records at the same `locationId` and availability type.
-4. Find existing forming doubles game at that location/type, or create one.
-5. Merge eligible players into the game.
-6. If player count reaches 4:
-   - set `status: "confirmed"`
-   - set `meetTime` to now plus 30 minutes
-   - keep `court: null`
-   - create `gameConfirmed` notifications
-7. If fewer than 4:
-   - keep `status: "forming"`
-   - create `formingGame` notifications
+1. Requires signed-in Firebase user.
+2. Requires `gameId`.
+3. Loads the game.
+4. Verifies game is `forming` and not full.
+5. Verifies caller is not already in an overlapping active game.
+6. Verifies playmate exclusions.
+7. Adds caller to `playerIds`.
+8. If game reaches capacity, marks it `confirmed` and creates notifications.
 
-Important limitation:
+### `leaveGame`
 
-- It does not yet prevent a user who already has a confirmed game from starting another Ready Now game.
-- It does not yet respect playmate exclusions.
-- It does not yet distinguish mixed doubles.
-- It does not yet support singles.
+Callable HTTPS function.
+
+Behavior:
+
+- Removes caller from the game.
+- Keeps game state consistent.
+- Creates relevant notifications.
+
+Known caveat:
+
+- Review whether it deletes all availability docs for the leaving user. That may conflict with future multi-window behavior where a player leaves one future match but still wants another separate time window active.
 
 ### `assignCourt`
 
@@ -442,13 +528,15 @@ Behavior:
 5. Updates `games/{gameId}.court`.
 6. Creates `courtAssigned` notifications for every player in the game.
 
-Current UI calls this with:
+### `closeExpiredGames`
 
-```text
-Court 4
-```
+Scheduled function.
 
-Next UI improvement should let the user choose/type the court rather than hard-coding Court 4.
+Behavior:
+
+- Runs every 5 minutes.
+- Closes stale forming/confirmed games after `endsAt + 15 minutes`.
+- This prevents old open matches from staying visible forever.
 
 ## Security Rules
 
@@ -472,273 +560,312 @@ Current posture:
 - Users can only update `read` on their own notifications.
 - Cloud Functions use Admin SDK for game and notification writes.
 
-This is the intended shape: clients express availability, backend owns matchmaking.
+This is the intended architecture: clients express intent, backend owns matchmaking and game mutations.
 
-## Important Files
+## PWA and Mobile Notes
 
-Frontend:
+This is currently a PWA, not a native iPhone app.
 
-- `src/main.tsx` - main app UI and state wiring
-- `src/firebase.ts` - Firebase app/auth/firestore/functions initialization
-- `src/firebaseDb.ts` - Firestore subscriptions and write helpers
-- `src/domain.ts` - shared TypeScript domain types
-- `src/data.ts` - sample fallback data
-- `src/styles.css` - mobile Liquid Glass-ish UI styling
-- `public/manifest.webmanifest` - PWA manifest
-- `public/sw.js` - service worker cache behavior
+Install on iPhone:
 
-Backend:
+1. Open `https://paddleup-match-maker.web.app` in Safari.
+2. Tap Share.
+3. Tap `Add to Home Screen`.
+4. Launch from the Home Screen icon.
 
-- `functions/src/index.ts` - Cloud Functions
-- `functions/package.json` - Functions dependencies/runtime
+Important iOS note:
 
-Firebase:
+- PWA push notifications on iPhone require the user to install the PWA to Home Screen.
+- FCM/push is not implemented yet, so current alerts are in-app only.
 
-- `firebase.json` - Hosting config and no-cache headers for `index.html` and `sw.js`
-- `firestore.rules` - Firestore rules
+Mobile app shell fixes already made:
+
+- The document body is locked to reduce Safari scroll bounce issues.
+- Each screen uses internal scrolling.
+- Bottom navigation is intended to stay consistent page-to-page.
+- Safe-area padding is handled in CSS.
+
+Continue testing on real iPhone Safari/PWA because desktop browser emulation misses Safari address-bar and bottom-bar behavior.
 
 ## Current Verified State
 
-As of May 30, 2026:
+As of May 31, 2026:
 
 - Firebase Hosting is live.
 - Google sign-in works.
 - User profile doc is written on sign-in.
-- Ready Now availability writes to Firestore.
-- Cloud Function creates/updates doubles game.
-- With four Ready Now players, game confirms.
-- Confirmed game appears in Home and My Games after sign-in.
-- Notifications appear in Home and bell count.
-- Assign Court backend function is deployed.
+- Ready Now, Later Today, and Tomorrow requests write availability.
+- Cloud Function creates/updates doubles forming games.
+- Direct join works.
+- Drop out updates the UI immediately.
+- Ready Now default duration persists across sign-out/sign-in.
+- Forming cards show timing context.
+- Ready Now cards show remaining/expiration context.
+- Old expired games disappear after the grace period.
+- Confirmed games can have courts assigned.
+- Home reads live Firestore games after sign-in.
+- My Games reads live Firestore games after sign-in.
+- Notifications are read live from Firestore and shown in-app.
+- Web production build passes.
+- Functions production build passes.
 - Code is pushed to GitHub.
-- `npm run build` passes for web.
-- `npm run build` passes for functions.
+- Latest Cloud Functions deploy succeeded.
 
 Known test data:
 
-- Two real signed-in users were used.
-- Two temporary test players were manually seeded:
-  - `test-player-3`
-  - `test-player-4`
-- Existing confirmed game may include those test users. Do not treat current Firestore data as clean production data.
+- Several real and temporary test users/games may exist in Firestore.
+- Do not treat current Firestore data as clean production data.
+- Before inviting real users, add an admin cleanup path or manually reset test data.
 
-Before inviting real users, create a small admin cleanup script or manually reset test data.
+## Recent Enhancements and Fixes
+
+### Match model simplification
+
+- Removed separate `Future Matches` vs `Games Forming` mental model.
+- Unified open requests under `Matches Forming`.
+- Added explicit play-window labels on match cards.
+
+### Home pulse cards removed
+
+- Removed MVP count cards because users could not easily infer what action to take from them.
+- The primary CTA and open matches now carry the UX.
+
+### Direct join restored
+
+- Users can now join displayed forming games directly.
+- This supports the practical use case: "I see an open match at a time I can play; let me join it."
+
+### Overlap rules relaxed correctly
+
+- Users are blocked only from joining or creating overlapping active games.
+- A user can be in a tomorrow game and still create/join a Ready Now or Later Today game if times do not overlap.
+
+### Forming game windows preserved
+
+- Later players no longer shrink the original forming game's time window.
+- Match requires at least 30 minutes of overlap with the preserved game window.
+
+### Expiration cleanup
+
+- Backend scheduled cleanup closes stale forming/confirmed games.
+- Frontend hides stale games after the 15-minute grace period.
+
+### Ready Now default persistence fixed
+
+- The UI now waits for the live user preference before selecting the default duration.
+- This fixed the bug where 120 minutes reverted to 60 after sign-out/sign-in.
+
+### Mobile scrolling pass
+
+- Reduced inconsistent Safari scroll behavior.
+- Kept bottom navigation more stable across pages.
+
+### My Games selected game refresh fixed
+
+- Dropping out clears selected game immediately.
+- The selected card is derived from the current user's live games.
+
+### Player names on game cards
+
+- Replaced redundant "Need X more" line under avatars with first-name/last-initial player summaries.
+
+### CTA compacted
+
+- Sparkle icon and "Want to play now or soon?" were moved onto one row to save vertical space.
+
+### Ready Now expiration shown
+
+- Ready Now cards now show the user's active play window ending time or minutes remaining.
 
 ## Known Issues / Rough Edges
 
-1. Auth popup/tab can remain open on Firebase auth handler.
-   - This is mostly a browser/popup cleanup issue.
-   - The user can close the blank auth handler tab safely.
+1. Function naming is stale.
+   - `matchReadyNowDoubles` handles more than Ready Now.
+   - Rename carefully later if desired.
 
-2. App has sample fallback data.
-   - Good for signed-out demo.
-   - Can confuse QA if signed-in reads fail because sample data still appears.
-   - Keep the status strip visible during POC.
+2. Singles are not implemented in backend.
+   - MVP is doubles-first.
 
-3. Court assignment is hard-coded to `Court 4`.
-   - Backend accepts any valid court string.
-   - UI should provide a simple picker/input.
+3. Push notifications are not implemented.
+   - Current notification system is Firestore/in-app only.
 
-4. Ready Now can create duplicate active games for the same user.
-   - Backend should check whether the user is already in a forming/confirmed game before creating/updating another one.
+4. Admin tooling is minimal.
+   - Admin controls are intended for David only.
+   - Need safer cleanup/reset tools before broader testing.
 
-5. Playmate removal is not enforced by matchmaking.
-   - Need backend query/logic to respect disabled playmates.
+5. Test data may pollute QA.
+   - Add a cleanup script or admin-only reset function before inviting real players.
 
-6. Later Today, Tomorrow, and Weekend Availability are UI-only placeholders.
-   - They do not write real Firestore availability yet.
+6. Playmate UX/persistence should be checked end-to-end.
+   - Backend has playmate exclusion logic, but UI and data setup should be audited before relying on it.
 
-7. FCM/push notification is not implemented.
-   - Current notifications are Firestore in-app notifications only.
+7. Direct join does not create availability.
+   - This is intentional for now because direct join means accepting the visible game window.
+   - Be mindful when building analytics around "availability created" versus "game joined."
 
-8. No native iOS app yet.
-   - Current product is a PWA.
-   - For MVP testing, PWA is likely enough.
-   - Native iOS can come later if push/install friction becomes the bottleneck.
+8. Individual overlap may not equal common overlap.
+   - Current rule is at least 30 minutes overlap between each player and the base game window.
+   - If real users expect all players to share the exact same 30-minute segment, backend logic must become stricter.
 
-9. No admin tools.
-   - Need ability to clean test data, view games, maybe seed users, and inspect matching state.
-   - Admin should eventually configure location settings, including court labels/counts. Blackhawk currently has 10 courts.
+9. Bundle size warning exists.
+   - Production build passes, but Vite warns about a bundle over 500KB.
+   - Not MVP-blocking.
 
-10. No analytics events beyond Firebase Analytics initialization.
-   - Need product metrics around Ready Now, time to game formation, confirmed games, court assignment, and weekly active users.
+10. No full analytics funnel yet.
+   - Firebase Analytics is initialized, but product events need to be defined and tracked.
 
 ## Recommended Next Steps
 
-### 1. Add a small Reset/Test Admin path
+### 1. QA the latest deployed backend behavior
 
-For POC speed, create either:
+Test:
 
-- local script using Firebase Admin SDK, or
-- callable admin-only function, or
-- temporary CLI snippets
+- A creates tomorrow `11:00 AM-12:00 PM`.
+- B creates tomorrow `10:00 AM-11:30 AM`.
+- Confirm B joins A's match.
+- Confirm the game still displays `11:00 AM-12:00 PM`.
 
-Needed actions:
+Also test:
 
-- Delete test players
+- A has tomorrow match.
+- A can still create Ready Now today.
+- A cannot create/join another game that overlaps the same time window.
+
+### 2. Add cleanup/admin tools
+
+Create a safe admin-only way to:
+
 - Delete test availability
-- Delete test games
 - Delete test notifications
-- Seed 2-4 fake users and Ready Now records when needed
+- Delete test games
+- Optionally delete seeded fake users
+- Reset one location to a clean QA state
 
 Do not expose this to normal users.
 
-### 2. Prevent duplicate active games
+### 3. Improve court assignment UI
 
-In `matchReadyNowDoubles`, before adding a player:
+Add:
 
-- query active games where `playerIds` contains user and `status` is `forming` or `confirmed`
-- if already active, either:
-  - ignore new availability, or
-  - update their existing availability only
+- bottom sheet or modal
+- Blackhawk options like `Court 1` through `Court 10`
+- `Other` text entry
 
-Firestore supports `array-contains`, but watch index requirements.
+Keep the write through `assignCourt`; do not let the client write `games` directly.
 
-### 3. Real Court Assignment UI
-
-Replace hard-coded Court 4 with:
-
-- simple bottom sheet/modal
-- choices like Court 1-10 plus "Other" for Blackhawk
-- call `assignGameCourt(gameId, selectedCourt)`
-
-Keep game writes backend-owned.
-Later admin should make court options configurable per `locationId` rather than baking court counts into the client.
-
-### 4. Mark Notifications Read
+### 4. Mark notifications read
 
 Implement:
 
-- tap bell opens notification list
-- tap notification or "mark all read" updates `notifications/{id}.read`
+- notification list or simple latest-updates interaction
+- `mark all read`
+- per-notification read update
 
 Rules already allow users to update only `read` on their own notifications.
 
-### 5. Wire Later Today and Tomorrow
+### 5. Audit leave-game availability cleanup
 
-Implement Firestore writes for:
+If a user can have multiple non-overlapping intentions, leaving one game should not necessarily delete all availability docs. Audit `leaveGame` against these use cases:
 
-- `type: "laterToday"`
-- `type: "tomorrow"`
-- user-selected `startTime`
-- user-selected `endTime`
+- User leaves tomorrow match but still wants Ready Now today.
+- User leaves Ready Now but still wants a tomorrow match.
+- User leaves one future game and should remain eligible for a different non-overlapping window.
 
-Then expand Cloud Function matching logic to match overlapping windows.
-
-Keep MVP simple:
-
-- if enough overlapping players exist, create game
-- no optimization
-- no countdowns
-
-### 6. Playmate Persistence and Exclusion
-
-Wire `playmates` collection in UI:
-
-- default all users as eligible
-- store disabled records only if simpler
-- backend should exclude removed playmates during matching
-
-Be careful with mutual exclusion:
-
-- If A removes B, A should not be matched with B.
-- If B has not removed A, still exclude the pair.
-
-### 7. Firebase Messaging / Push Notifications
-
-Only do this after in-app notification flow is stable.
-
-Implementation direction:
-
-- Enable Firebase Cloud Messaging in Firebase console if not already done.
-- Add web push certificate / VAPID key.
-- Add browser permission prompt at a meaningful moment, not on first load.
-- Store FCM token under user doc or `userPushTokens`.
-- Cloud Functions send FCM when:
-  - game confirmed
-  - court assigned
-  - player left
-  - replacement needed
-
-For iPhone:
-
-- PWA push notifications require the app to be added to Home Screen on modern iOS.
-- If App Store native iOS is chosen later, push flow changes to APNs/FCM native.
-
-### 8. Product Metrics
+### 6. Add product analytics
 
 Track:
 
-- Ready Now clicks
-- Availability created
-- Game forming created
+- CTA tap
+- Ready Now request
+- Later Today request
+- Tomorrow request
+- Direct join
+- Drop out
 - Game confirmed
-- Formation time
+- Time from request to confirmation
 - Court assigned
 - Weekly active users
 
-Use these to answer the actual MVP question:
+These should answer the MVP question:
 
 > Is this better than WhatsApp coordination?
 
+### 7. Add FCM only after in-app flow is solid
+
+Implementation direction:
+
+- Enable Firebase Cloud Messaging.
+- Add VAPID key.
+- Ask permission at a meaningful moment, not first page load.
+- Store push tokens per user/device.
+- Send push for:
+  - game confirmed
+  - court assigned
+  - player left
+  - need replacement
+
+For iPhone PWA, push requires Home Screen installation.
+
 ## Design Direction
 
-The current UI is intentionally iPhone-shaped and inspired by Apple Liquid Glass, but it is still a web/PWA implementation.
+The current UI is intentionally iPhone-shaped and inspired by Apple/Liquid Glass-style surfaces, but it is still a web/PWA implementation.
 
 Keep:
 
-- mobile-first
+- mobile-first interaction
 - big Home CTA
-- calm, polished, Apple-ish surface
-- Bottom nav
-- Location visible
-- Status strip during POC
+- polished dark sports-club feel
+- bottom nav
+- location visible
+- clear timing labels
+- direct actions on cards
 
 Avoid:
 
-- making it a marketing landing page
-- cluttering Home with too much information
+- landing-page design
+- too many dashboard counts
 - chat features
 - event-management complexity
 - ladders/round robins/open play until MVP proves demand
+- hiding critical time-window details behind drill-in screens
 
 ## Development Philosophy
 
-The backend should own decisions. Client should express intent:
+Clients should express intent:
 
-- "I am available"
-- "Assign this court"
-- "I am leaving"
+- "I want to play now."
+- "I want to play later today."
+- "I want to play tomorrow."
+- "I want to join this displayed match."
+- "I am leaving this match."
+- "Assign this court."
 
-Cloud Functions should handle:
+Cloud Functions should own:
 
 - matching
-- locking games
-- notification creation
-- validation of game changes
+- locking/confirming games
+- validating game changes
+- notifications
+- expiration cleanup
 
-This avoids fragile client-side matchmaking and keeps GitHub Pages/Firebase Hosting viable because the "server" is Firebase Functions, not a custom Node server.
+This keeps Firebase Hosting viable. The "server" is Firebase Functions, not a custom Node app.
 
-## Quick Mental Model
+## Quick User Day-in-the-Life
 
-User day-in-the-life:
-
-1. At 8:00 AM, user opens PaddleUp.
-2. Taps `I Want to Play`.
-3. Chooses `Ready Now` for 60 minutes.
+1. At 8:00 AM, user opens PaddleUp from Safari or the installed Home Screen PWA.
+2. User taps `Find Me Playmates`.
+3. User chooses Ready Now for 60 minutes, or chooses a later/tomorrow play window.
 4. App writes availability to Firestore.
-5. Cloud Function checks other active Ready Now players at Blackhawk.
-6. If fewer than 4 players, a forming doubles match exists and players see the requested timing plus "Need X more."
-7. When 4 players are available, function confirms the game.
-8. Players see in-app notification and eventually push notification.
-9. Meet time defaults to 30 minutes after formation.
+5. Cloud Function checks compatible players at Blackhawk.
+6. If fewer than 4 players, a forming doubles match appears with the requested play window and needed count.
+7. Another user can either publish matching availability or directly join the displayed match.
+8. When 4 players are in, the backend confirms the game.
+9. Players see in-app notification, and later will receive push notification once FCM is implemented.
 10. Any player assigns a court.
-11. Everyone gets court notification.
+11. The game closes automatically after the play window plus grace period.
 
-## Cursor Starting Prompt
-
-Suggested prompt to give Cursor:
+## Suggested Cursor Starting Prompt
 
 ```text
-You are taking over a React/TypeScript/Firebase PWA called PaddleUp Matchmaking. Read CURSOR_HANDOFF.md, README.md, src/domain.ts, src/firebaseDb.ts, src/main.tsx, firestore.rules, and functions/src/index.ts first. Preserve the architecture: clients write availability, Cloud Functions own game matching and game mutations, and every record must keep locationId. Do not hard-code Blackhawk outside the single seeded location. Start by implementing the next recommended task from the handoff, preferably duplicate-active-game prevention or a real court assignment picker.
+You are taking over PaddleUp Matchmaking, a React/TypeScript/Firebase PWA for pickleball matchmaking. Read CURSOR_HANDOFF.md, README.md, src/domain.ts, src/firebaseDb.ts, src/main.tsx, src/styles.css, firestore.rules, and functions/src/index.ts first. Preserve the architecture: clients express intent, Cloud Functions own game matching/mutations, and all data remains location-first through locationId. The latest product decision is that all Ready Now/Later Today/Tomorrow requests are "Matches Forming"; direct join is allowed; games close after the window plus 15 minutes; and forming game windows must be preserved while later players can join with at least 30 minutes of overlap. Start by QAing the latest deployed behavior, then choose from admin cleanup, court assignment UI, notification read states, or leave-game availability cleanup.
 ```
