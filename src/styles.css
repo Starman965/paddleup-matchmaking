@@ -379,6 +379,11 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-weight: 850;
   white-space: nowrap;
 }
+.court-pill.muted {
+  color: var(--pkl-muted);
+  background: rgba(255,255,255,0.08);
+  box-shadow: inset 0 0 0 1px var(--pkl-line);
+}
 .future-card {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -591,6 +596,11 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   color: #86efac;
   font-size: 12px;
   font-style: normal;
+  font-weight: 850;
+}
+.game-window-line,
+.forming-row .forming-window {
+  color: #fde68a;
   font-weight: 850;
 }
 .forming-row:focus-visible {

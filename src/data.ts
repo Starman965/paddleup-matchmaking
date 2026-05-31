@@ -120,18 +120,22 @@ export const games: Game[] = [
     id: "g2",
     locationId: "blackhawk",
     type: "doubles",
+    availabilityType: "laterToday",
     status: "forming",
     requiredPlayers: 4,
     playerIds: ["alex", "nina", "mia"],
-    startsAt: "2026-05-29T16:00:00"
+    startsAt: "2026-05-29T16:00:00",
+    endsAt: "2026-05-29T18:00:00"
   },
   {
     id: "g3",
     locationId: "blackhawk",
     type: "singles",
+    availabilityType: "tomorrow",
     status: "forming",
     requiredPlayers: 2,
     playerIds: ["susan"],
-    startsAt: "2026-05-30T08:00:00"
+    startsAt: "2026-05-30T08:00:00",
+    endsAt: "2026-05-30T12:00:00"
   }
 ];

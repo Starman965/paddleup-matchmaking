@@ -1639,19 +1639,29 @@ function GameCard({
   const canUpdateStartTime = Boolean(!compact && activeUserId && game.status === "confirmed" && game.playerIds.includes(activeUserId) && onUpdateStartTime);
   const isForming = game.status === "forming";
   const timing = gameTimeLabel(game);
+  const courtLabel = game.court || "Assign Court";
 
   return (
     <article className={`game-card glass-panel ${game.status}`}>
       <div className="game-meta">
         <div>
           <strong>{isForming ? "Getting Matched" : timing}</strong>
-          <span>
-            {isForming
-              ? `${game.type} · ${timing} · ${game.playerIds.length}/${game.requiredPlayers} joined · ${missing > 0 ? `${missing} needed` : "Players set"}`
-              : `${game.type} · ${location.name}`}
-          </span>
+          {isForming ? (
+            <>
+              <span className="game-window-line">Play window: {timing}</span>
+              <span>{game.type} · {game.playerIds.length}/{game.requiredPlayers} joined · {missing > 0 ? `${missing} needed` : "Players set"}</span>
+            </>
+          ) : (
+            <span>{game.type} · {location.name}</span>
+          )}
         </div>
-        {(game.court || !isForming) && <button className="court-pill" onClick={onAssignCourt}>{game.court || "Court TBD"}</button>}
+        {!isForming && (
+          onAssignCourt ? (
+            <button className="court-pill" onClick={onAssignCourt}>{courtLabel}</button>
+          ) : (
+            <span className={`court-pill ${game.court ? "" : "muted"}`}>{game.court || "Court TBD"}</span>
+          )
+        )}
       </div>
       <AvatarStack users={players} missing={missing} />
       {canUpdateStartTime && (
@@ -1682,7 +1692,8 @@ function FormingGame({ game, userById, onClick }: { game: Game; userById: Map<st
   return (
     <button className="forming-row glass-panel" onClick={onClick} aria-label={`View forming ${game.type} game`}>
       <div>
-        <strong>{game.type} · {timing}</strong>
+        <strong>{game.type}</strong>
+        <span className="forming-window">Play window: {timing}</span>
         <span>{game.playerIds.length}/{game.requiredPlayers} joined · {missing > 0 ? `${missing} needed` : "Players set"}</span>
         {game.court && <em>{game.court}</em>}
       </div>
