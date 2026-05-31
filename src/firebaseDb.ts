@@ -28,12 +28,26 @@ function timestampToIso(value: unknown) {
   return new Date().toISOString();
 }
 
+function optionalTimestampToIso(value: unknown) {
+  if (!value) return undefined;
+  if (typeof value === "string") return value;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "object" && "toDate" in value && typeof value.toDate === "function") {
+    return value.toDate().toISOString();
+  }
+  return undefined;
+}
+
 function readString(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
 function readStringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readNumber(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function userFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): User {
@@ -46,6 +60,7 @@ function userFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): User {
     photoUrl: readString(data.photoUrl),
     locationId: readString(data.locationId, "blackhawk"),
     presence: data.presence === "offline" ? "offline" : "visible",
+    defaultReadyNowDuration: readNumber(data.defaultReadyNowDuration, 60),
     isTestUser: data.isTestUser === true
   };
 }
@@ -78,7 +93,7 @@ function availabilityFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>)
 
 function gameFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Game {
   const data = snapshot.data();
-  const meetTime = timestampToIso(data.meetTime);
+  const meetTime = optionalTimestampToIso(data.meetTime);
   return {
     id: readString(data.id, snapshot.id),
     locationId: readString(data.locationId, "blackhawk"),
@@ -90,7 +105,8 @@ function gameFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Game {
     status: data.status === "confirmed" || data.status === "completed" ? data.status : "forming",
     requiredPlayers: data.requiredPlayers === 2 ? 2 : 4,
     playerIds: readStringArray(data.playerIds),
-    startsAt: readString(data.startsAt, meetTime),
+    startsAt: readString(data.startsAt, meetTime || ""),
+    endsAt: typeof data.endsAt === "string" ? data.endsAt : undefined,
     meetTime,
     court: typeof data.court === "string" ? data.court : null,
     formedFromAvailabilityIds: readStringArray(data.formedFromAvailabilityIds)
@@ -185,6 +201,13 @@ export async function saveAvailabilityWindow(
 export async function setUserPresence(userId: string, presence: "visible" | "offline") {
   await updateDoc(doc(db, "users", userId), {
     presence,
+    updatedAt: serverTimestamp()
+  });
+}
+
+export async function setDefaultReadyNowDuration(userId: string, durationMinutes: number) {
+  await updateDoc(doc(db, "users", userId), {
+    defaultReadyNowDuration: durationMinutes,
     updatedAt: serverTimestamp()
   });
 }

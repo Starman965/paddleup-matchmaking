@@ -2,6 +2,49 @@
 
 Last updated: May 30, 2026
 
+## Latest Update - May 30, 2026
+
+The product model was simplified to match the intended Uber/OpenTable analogy:
+
+- Users are always requesting a match.
+- The only difference is timing: `Ready Now`, `Later Today`, or `Tomorrow`.
+- Future availability is no longer treated as a separate user-facing concept from matchmaking.
+- Home should not show both `Future Matches` and `Games Forming`; that created confusion because both looked like partial games.
+- Home now uses one concept: `Matches Forming`.
+
+Rationale:
+
+- `Ready Now` is an immediate match request.
+- `Later Today` and `Tomorrow` are scheduled match requests.
+- Once a user submits any of those, PaddleUp should start matchmaking immediately for that requested play window.
+- A match becomes `confirmed` only when capacity is reached.
+
+Implementation notes from this update:
+
+- Removed the Home `Future Matches` section.
+- Renamed `Games Forming` to `Matches Forming`.
+- Forming match cards now display timing context:
+  - `Ready Now`
+  - `Today · 1:00 PM-5:00 PM`
+  - `Tomorrow · 11:00 AM-12:00 PM`
+- Forming games now store `startsAt` and `endsAt` so the UI can show the requested play window.
+- Older forming games without stored time data avoid faking a current timestamp.
+- `defaultReadyNowDuration` is now stored on `users/{uid}` and hydrated on reload.
+- A 30-minute `Ready Now` request is valid; the backend lead-time cutoff applies only to future windows.
+- Confirmed game start-time edits now reject past times.
+- First-time sign-in now upserts the user profile before setting presence.
+
+Current intended Home hierarchy:
+
+1. User status / active match status
+2. Primary CTA: `Find Me Playmates`
+3. Timing choices: `Later Today`, `Tomorrow`
+4. Pulse counts
+5. `Next Game`, if confirmed
+6. `Matches Forming`
+
+Cursor should preserve this mental model unless the product direction changes explicitly.
+
 ## Executive Summary
 
 PaddleUp Matchmaking is a mobile-first React/TypeScript PWA for real-time pickleball availability and matchmaking.
@@ -685,7 +728,7 @@ User day-in-the-life:
 3. Chooses `Ready Now` for 60 minutes.
 4. App writes availability to Firestore.
 5. Cloud Function checks other active Ready Now players at Blackhawk.
-6. If fewer than 4 players, a forming doubles game exists and players see "Need X more."
+6. If fewer than 4 players, a forming doubles match exists and players see the requested timing plus "Need X more."
 7. When 4 players are available, function confirms the game.
 8. Players see in-app notification and eventually push notification.
 9. Meet time defaults to 30 minutes after formation.
@@ -699,4 +742,3 @@ Suggested prompt to give Cursor:
 ```text
 You are taking over a React/TypeScript/Firebase PWA called PaddleUp Matchmaking. Read CURSOR_HANDOFF.md, README.md, src/domain.ts, src/firebaseDb.ts, src/main.tsx, firestore.rules, and functions/src/index.ts first. Preserve the architecture: clients write availability, Cloud Functions own game matching and game mutations, and every record must keep locationId. Do not hard-code Blackhawk outside the single seeded location. Start by implementing the next recommended task from the handoff, preferably duplicate-active-game prevention or a real court assignment picker.
 ```
-

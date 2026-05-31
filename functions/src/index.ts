@@ -41,6 +41,7 @@ type Game = {
   updatedAt?: FirebaseFirestore.FieldValue;
   meetTime?: string;
   startsAt?: string;
+  endsAt?: string;
   court?: string | null;
 };
 
@@ -74,8 +75,9 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
 
   const now = new Date();
   const latestMatchDeadline = new Date(now.getTime() + MATCH_LEAD_TIME_MINUTES * 60 * 1000);
+  const minimumWindowEnd = availabilityType === "readyNow" ? now : latestMatchDeadline;
   const triggerWindow = availabilityWindow(availability);
-  if (!triggerWindow || triggerWindow.end <= latestMatchDeadline) {
+  if (!triggerWindow || triggerWindow.end <= minimumWindowEnd) {
     logger.info("Ignoring expired, invalid, or too-tight availability", {
       availabilityId,
       availabilityType,
@@ -95,7 +97,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
   for (const doc of activeAvailabilitySnapshot.docs) {
     const data = doc.data() as Availability;
     const window = availabilityWindow(data);
-    if (!data.userId || !window || window.end <= latestMatchDeadline) continue;
+    if (!data.userId || !window || window.end <= minimumWindowEnd) continue;
     if (!candidates.some((candidate) => candidate.userId === data.userId)) {
       candidates.push({ userId: data.userId, availabilityId: doc.id, ...window });
     }
@@ -165,6 +167,8 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
           ? new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000).toISOString()
           : selection.overlapStart.toISOString()
         : undefined;
+    const startsAt = meetTime ?? selection.overlapStart.toISOString();
+    const endsAt = selection.overlapEnd.toISOString();
 
     const game: Game = {
       id: gameRef.id,
@@ -178,7 +182,9 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       court: existing?.court ?? null,
       createdAt: existing?.createdAt ?? FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
-      ...(meetTime ? { meetTime, startsAt: meetTime } : {})
+      startsAt,
+      endsAt,
+      ...(meetTime ? { meetTime } : {})
     };
 
     transaction.set(gameRef, game, { merge: true });
@@ -294,6 +300,10 @@ export const updateGameStartTime = onCall(async (request) => {
 
   if (!startsAt || Number.isNaN(startsAtDate.getTime())) {
     throw new HttpsError("invalid-argument", "Start time must be a valid date.");
+  }
+
+  if (startsAtDate <= new Date()) {
+    throw new HttpsError("invalid-argument", "Start time must be in the future.");
   }
 
   if (startsAtDate.getMinutes() % 15 !== 0 || startsAtDate.getSeconds() !== 0 || startsAtDate.getMilliseconds() !== 0) {

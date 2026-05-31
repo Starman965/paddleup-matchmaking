@@ -15,6 +15,7 @@ export type User = {
   photoUrl: string;
   locationId: string;
   presence?: "visible" | "offline";
+  defaultReadyNowDuration?: number;
   isTestUser?: boolean;
 };
 
@@ -48,6 +49,7 @@ export type Game = {
   requiredPlayers: 2 | 4;
   playerIds: string[];
   startsAt: string;
+  endsAt?: string;
   court?: string | null;
   meetTime?: string;
   formedFromAvailabilityIds?: string[];

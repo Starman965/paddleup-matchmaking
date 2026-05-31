@@ -23,6 +23,7 @@ import {
   markReadyNow,
   resetTestData,
   saveAvailabilityWindow,
+  setDefaultReadyNowDuration,
   setPlaymateEnabled,
   setUserPresence,
   subscribeLocation,
@@ -54,14 +55,6 @@ type UserPresence = {
   detail: string;
   deadline?: string;
   tone: "offline" | "available" | "matching" | "matched";
-};
-
-type AvailabilityGroup = {
-  id: string;
-  type: "laterToday" | "tomorrow";
-  startTime: string;
-  endTime: string;
-  userIds: string[];
 };
 
 function formatTime(value: string) {
@@ -109,6 +102,17 @@ function availabilityStatus(availability: Availability) {
   return `${availability.type === "tomorrow" ? "Tomorrow" : "Today"} ${formatTime(availability.startTime)}-${formatTime(availability.endTime)}`;
 }
 
+function gameTimeLabel(game: Game) {
+  if (game.status === "forming" && game.availabilityType === "readyNow") return "Ready Now";
+  if (game.startsAt && game.endsAt && (game.availabilityType === "laterToday" || game.availabilityType === "tomorrow")) {
+    return `${formatDay(game.startsAt)} · ${formatTime(game.startsAt)}-${formatTime(game.endsAt)}`;
+  }
+  if (game.startsAt) return `${formatDay(game.startsAt)} · ${formatTime(game.startsAt)}`;
+  if (game.availabilityType === "laterToday") return "Later Today";
+  if (game.availabilityType === "tomorrow") return "Tomorrow";
+  return "Ready Now";
+}
+
 function matchDeadline(availability: Availability) {
   const endValue = availability.endTime || availability.expiresAt;
   if (!endValue) return undefined;
@@ -129,7 +133,7 @@ function matchDeadlineLabel(availability: Availability | undefined, nowMs: numbe
   if (!availability) return undefined;
   const deadline = matchDeadline(availability);
   if (!deadline) return undefined;
-  return `Match by ${formatTime(deadline.toISOString())} · ${formatCountdown(deadline, nowMs)}`;
+  return `Time remaining: ${formatCountdown(deadline, nowMs)}. By ${formatTime(deadline.toISOString())}`;
 }
 
 function pulseCounts(availability: Availability[], games: Game[]) {
@@ -141,28 +145,6 @@ function pulseCounts(availability: Availability[], games: Game[]) {
     tomorrow: active.filter((item) => item.type === "tomorrow").length,
     formingGames: games.filter((game) => game.status === "forming").length
   };
-}
-
-function futureAvailabilityGroups(availability: Availability[], userById: Map<string, User>, activeUserId: string, nowMs: number) {
-  const groups = new Map<string, AvailabilityGroup>();
-  availability
-    .filter((item) => (item.type === "laterToday" || item.type === "tomorrow") && new Date(item.endTime).getTime() > nowMs)
-    .filter((item) => item.userId === activeUserId || userById.get(item.userId)?.presence !== "offline")
-    .forEach((item) => {
-      const type = item.type as "laterToday" | "tomorrow";
-      const key = `${type}_${item.startTime}_${item.endTime}`;
-      const group = groups.get(key) ?? {
-        id: key,
-        type,
-        startTime: item.startTime,
-        endTime: item.endTime,
-        userIds: []
-      };
-      if (!group.userIds.includes(item.userId)) group.userIds.push(item.userId);
-      groups.set(key, group);
-    });
-
-  return Array.from(groups.values()).sort((groupA, groupB) => new Date(groupA.startTime).getTime() - new Date(groupB.startTime).getTime());
 }
 
 function initials(user: User) {
@@ -180,6 +162,7 @@ function userFromFirebase(firebaseUser: FirebaseUser, locationId: string): User 
     email: firebaseUser.email || "",
     photoUrl: firebaseUser.photoURL || "",
     locationId,
+    defaultReadyNowDuration: 60,
     presence: "visible"
   };
 }
@@ -249,6 +232,14 @@ function App() {
   const [matchFeedback, setMatchFeedback] = useState<MatchFeedback | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
+  const [onlineSheetOpen, setOnlineSheetOpen] = useState(false);
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const [readyNowSheetOpen, setReadyNowSheetOpen] = useState(false);
+  const [readyNowDraftDuration, setReadyNowDraftDuration] = useState(duration);
+  const [windowSheetType, setWindowSheetType] = useState<"laterToday" | "tomorrow" | null>(null);
+  const [windowDraftStart, setWindowDraftStart] = useState(laterTodayStart);
+  const [windowDraftEnd, setWindowDraftEnd] = useState(laterTodayEnd);
+  const [durationHydratedForUser, setDurationHydratedForUser] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => {
@@ -256,6 +247,7 @@ function App() {
     return onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
       if (user) {
+        setActiveTab("home");
         upsertCurrentUser(user, locations[0].id)
           .then(() => setFirebaseStatus(`Signed in. Ready to match at ${locations[0].name}.`))
           .catch((error: Error) => setFirebaseStatus(`Signed in, but profile save failed: ${error.message}`));
@@ -349,6 +341,17 @@ function App() {
   const activeUserId = firebaseUser?.uid || currentUserId;
   const currentUser = userById.get(activeUserId) || (firebaseUser ? userFromFirebase(firebaseUser, activeLocation.id) : seedUsers[0]);
   const onlinePlayerCount = allUsers.filter((user) => user.presence !== "offline").length;
+  const onlinePlayers = useMemo(
+    () =>
+      allUsers
+        .filter((user) => user.presence !== "offline")
+        .sort((userA, userB) => {
+          if (userA.uid === activeUserId) return -1;
+          if (userB.uid === activeUserId) return 1;
+          return `${userA.firstName} ${userA.lastName}`.localeCompare(`${userB.firstName} ${userB.lastName}`);
+        }),
+    [activeUserId, allUsers]
+  );
   const playmateIds = useMemo(() => {
     if (!firebaseUser) return new Set(playmateState.filter((p) => p.enabled).map((p) => p.playmateId));
     const disabledPlaymateIds = new Set(playmateState.filter((p) => !p.enabled).map((p) => p.playmateId));
@@ -385,6 +388,7 @@ function App() {
     [myGames]
   );
   const nextGame = displayGames.find((game) => game.status === "confirmed" && game.playerIds.includes(activeUserId));
+  const selectedGame = selectedGameId ? displayGames.find((game) => game.id === selectedGameId) : undefined;
   const courtOptions = activeLocation.courtLabels?.length ? activeLocation.courtLabels : defaultCourtOptions;
   const selectedCourt = courtChoice === "Other" ? customCourt.trim() : courtChoice;
   const isAdmin = Boolean(firebaseUser?.email && adminEmails.has(firebaseUser.email));
@@ -406,13 +410,13 @@ function App() {
     if (activeGame?.status === "forming") {
       return {
         label: "Getting Matched",
-        detail: `${activeGame.playerIds.length}/${activeGame.requiredPlayers} players in your forming game.`,
+        detail: "",
         deadline,
         tone: "matching"
       };
     }
     if (currentUserAvailability?.type === "readyNow") {
-      return { label: "Ready Now", detail: "You are actively available right now.", deadline, tone: "available" };
+      return { label: "Ready Now", detail: "You are available to start within your Ready Now window.", deadline, tone: "available" };
     }
     if (currentUserAvailability?.type === "laterToday") {
       return { label: "Available Today", detail: availabilityStatus(currentUserAvailability), deadline, tone: "available" };
@@ -423,10 +427,58 @@ function App() {
     if (currentUser.presence === "offline") {
       return { label: "Offline", detail: "You are hidden from Players. Your matches stay active.", tone: "offline" };
     }
-    return { label: "Not Matchable", detail: "Choose Ready Now, Today, or Tomorrow when you want to play.", tone: "offline" };
+    return { label: "Want a Match?", detail: "Click Find Me Playmates to play ASAP, or choose a later time.", tone: "offline" };
   }, [activeMyGames, currentUser.presence, currentUserAvailability, nowMs]);
   const livePulseCounts = useMemo(() => pulseCounts(liveAvailability, displayGames), [displayGames, liveAvailability]);
-  const futureGroups = useMemo(() => futureAvailabilityGroups(liveAvailability, userById, activeUserId, nowMs), [activeUserId, liveAvailability, nowMs, userById]);
+  useEffect(() => {
+    if (!firebaseUser) {
+      setDurationHydratedForUser(null);
+      return;
+    }
+    if (durationHydratedForUser === activeUserId) return;
+    const savedDuration = currentUser.defaultReadyNowDuration;
+    if ([30, 60, 90, 120].includes(savedDuration ?? 0)) {
+      setDuration(savedDuration!);
+    }
+    setDurationHydratedForUser(activeUserId);
+  }, [activeUserId, currentUser.defaultReadyNowDuration, durationHydratedForUser, firebaseUser]);
+
+  useEffect(() => {
+    if (!matchFeedback) return;
+
+    const relevantActiveGame = activeMyGames.find(
+      (game) => (game.availabilityType ?? "readyNow") === matchFeedback.type || game.playerIds.includes(activeUserId)
+    );
+    const hasRelevantAvailability = currentUserAvailability?.type === matchFeedback.type;
+
+    if (matchFeedback.status === "alreadyActive" && !relevantActiveGame) {
+      if (hasRelevantAvailability) {
+        setMatchFeedback({
+          ...matchFeedback,
+          status: "waiting",
+          title: "Availability Saved",
+          body: "Looking for compatible players. You will see a forming game here as soon as PaddleUp finds one."
+        });
+        return;
+      }
+      setMatchFeedback(null);
+      return;
+    }
+
+    if ((matchFeedback.status === "forming" || matchFeedback.status === "confirmed") && !relevantActiveGame) {
+      setMatchFeedback(hasRelevantAvailability ? {
+        ...matchFeedback,
+        status: "waiting",
+        title: "Availability Saved",
+        body: "Looking for compatible players. You will see a forming game here as soon as PaddleUp finds one."
+      } : null);
+      return;
+    }
+
+    if (matchFeedback.status === "waiting" && !hasRelevantAvailability && !relevantActiveGame) {
+      setMatchFeedback(null);
+    }
+  }, [activeMyGames, activeUserId, currentUserAvailability, matchFeedback]);
 
   useEffect(() => {
     if (!matchFeedback || matchFeedback.status === "confirmed" || matchFeedback.status === "alreadyActive" || matchFeedback.status === "error") return;
@@ -473,6 +525,11 @@ function App() {
 
     setCourtChoice(game.court ? "Other" : courtOptions[0]);
     setCustomCourt(game.court || "");
+  }
+
+  function viewSelectedGame(game: Game) {
+    setSelectedGameId(game.id);
+    setActiveTab("games");
   }
 
   function closeCourtPicker() {
@@ -594,7 +651,7 @@ function App() {
       });
   }
 
-  function startReadyNowMatching() {
+  function startReadyNowMatching(durationMinutes = duration) {
     if (!firebaseUser) {
       setFirebaseStatus("Sign in first, then Ready Now can write to Firestore.");
       return;
@@ -607,11 +664,11 @@ function App() {
       setUserPresence(firebaseUser.uid, "visible").catch((error: Error) => setFirebaseStatus(`Presence update failed: ${error.message}`));
     }
 
-    trackEvent("ready_now_clicked", { durationMinutes: duration, locationId: activeLocation.id });
-    markReadyNow(firebaseUser.uid, activeLocation.id, duration)
+    trackEvent("ready_now_clicked", { durationMinutes, locationId: activeLocation.id });
+    markReadyNow(firebaseUser.uid, activeLocation.id, durationMinutes)
       .then(() => {
-        trackEvent("availability_created", { type: "readyNow", durationMinutes: duration, locationId: activeLocation.id });
-        setFirebaseStatus(`Ready Now saved for ${duration} minutes at ${activeLocation.name}.`);
+        trackEvent("availability_created", { type: "readyNow", durationMinutes, locationId: activeLocation.id });
+        setFirebaseStatus(`Ready Now saved. You are available to start within ${durationMinutes} minutes at ${activeLocation.name}.`);
       })
       .catch((error: Error) => {
         setMatchFeedback({
@@ -627,18 +684,39 @@ function App() {
   function chooseHomeAvailability(type: Exclude<AvailabilityType, "weekend">) {
     setAvailabilityMode(type);
     if (type === "readyNow") {
-      startReadyNowMatching();
+      setReadyNowDraftDuration(duration);
+      setReadyNowSheetOpen(true);
       return;
     }
 
-    const startTime = type === "tomorrow" ? tomorrowStart : laterTodayStart;
-    const endTime = type === "tomorrow" ? tomorrowEnd : laterTodayEnd;
-    saveWindowAvailability(type, startTime, endTime);
+    setWindowDraftStart(type === "tomorrow" ? tomorrowStart : laterTodayStart);
+    setWindowDraftEnd(type === "tomorrow" ? tomorrowEnd : laterTodayEnd);
+    setWindowSheetType(type);
   }
 
-  function joinFutureAvailability(group: AvailabilityGroup) {
-    setAvailabilityMode(group.type);
-    saveWindowAvailability(group.type, timeInputValue(group.startTime), timeInputValue(group.endTime));
+  function confirmReadyNowDuration() {
+    setDuration(readyNowDraftDuration);
+    setReadyNowSheetOpen(false);
+    startReadyNowMatching(readyNowDraftDuration);
+  }
+
+  function confirmWindowAvailability() {
+    if (!windowSheetType) return;
+    const startIso = isoForTime(windowSheetType, windowDraftStart);
+    const endIso = isoForTime(windowSheetType, windowDraftEnd);
+    if (new Date(endIso) <= new Date(startIso)) {
+      setFirebaseStatus("Choose an end time after the start time.");
+      return;
+    }
+    if (windowSheetType === "tomorrow") {
+      setTomorrowStart(windowDraftStart);
+      setTomorrowEnd(windowDraftEnd);
+    } else {
+      setLaterTodayStart(windowDraftStart);
+      setLaterTodayEnd(windowDraftEnd);
+    }
+    setWindowSheetType(null);
+    saveWindowAvailability(windowSheetType, windowDraftStart, windowDraftEnd);
   }
 
   function togglePlaymate(uid: string) {
@@ -702,6 +780,15 @@ function App() {
     setOfflinePresence();
   }
 
+  function updateDefaultReadyNowDuration(durationMinutes: number) {
+    setDuration(durationMinutes);
+    if (!firebaseUser) return;
+
+    setDefaultReadyNowDuration(firebaseUser.uid, durationMinutes)
+      .then(() => setFirebaseStatus(`Default Ready Now setting saved: ${durationMinutes} minutes.`))
+      .catch((error: Error) => setFirebaseStatus(`Default setting save failed: ${error.message}`));
+  }
+
   function saveProfilePhoto(photo: Blob) {
     if (!firebaseUser) {
       setFirebaseStatus("Sign in first, then you can update your profile photo.");
@@ -723,9 +810,36 @@ function App() {
   }
 
   function signIn() {
-    signInWithPopup(auth, googleProvider).catch((error: Error) => {
-      setFirebaseStatus(`Sign-in failed: ${error.message}`);
-    });
+    signInWithPopup(auth, googleProvider)
+      .then(({ user }) => {
+        setActiveTab("home");
+        return upsertCurrentUser(user, activeLocation.id)
+          .then(() => setUserPresence(user.uid, "visible"))
+          .then(() => {
+            trackEvent("presence_updated", { presence: "visible", locationId: activeLocation.id, source: "sign_in" });
+            setFirebaseStatus(`Signed in. You are visible in Players.`);
+          })
+          .catch((error: Error) => setFirebaseStatus(`Signed in, but presence update failed: ${error.message}`));
+      })
+      .catch((error: Error) => {
+        setFirebaseStatus(`Sign-in failed: ${error.message}`);
+      });
+  }
+
+  function signOutUser() {
+    if (!firebaseUser) {
+      signOut(auth).catch((error: Error) => setFirebaseStatus(`Sign-out failed: ${error.message}`));
+      return;
+    }
+
+    setUserPresence(firebaseUser.uid, "offline")
+      .then(() => {
+        trackEvent("presence_updated", { presence: "offline", locationId: activeLocation.id, source: "sign_out" });
+      })
+      .catch((error: Error) => setFirebaseStatus(`Presence update before sign-out failed: ${error.message}`))
+      .finally(() => {
+        signOut(auth).catch((error: Error) => setFirebaseStatus(`Sign-out failed: ${error.message}`));
+      });
   }
 
   const nav = [
@@ -734,6 +848,16 @@ function App() {
     { key: "players" as const, label: "Players", icon: Users },
     { key: "me" as const, label: "Me", icon: UserRound }
   ];
+
+  if (!firebaseUser) {
+    return (
+      <main className="app-shell">
+        <div className="phone-frame signed-out-frame">
+          <SignedOutScreen onSignIn={signIn} status={firebaseStatus} />
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="app-shell">
@@ -746,23 +870,22 @@ function App() {
             <p className="location-kicker"><MapPin size={13} /> {activeLocation.name}</p>
             <h1>{activeTab === "home" ? "PaddleUp" : nav.find((item) => item.key === activeTab)?.label}</h1>
           </div>
-          <OnlinePill count={onlinePlayerCount} />
+          <OnlinePill count={onlinePlayerCount} onClick={() => setOnlineSheetOpen(true)} />
         </header>
 
         <section className="screen">
           {activeTab === "home" && (
             <HomeScreen
               nextGame={nextGame}
+              activeGame={activeMyGames[0]}
               games={displayGames}
               userById={userById}
               presence={currentPresence}
               counts={livePulseCounts}
               matchFeedback={matchFeedback}
-              futureGroups={futureGroups}
-              activeUserId={activeUserId}
               onSetTab={setActiveTab}
               onChooseAvailability={chooseHomeAvailability}
-              onJoinFuture={joinFutureAvailability}
+              onViewGame={viewSelectedGame}
             />
           )}
           {activeTab === "players" && (
@@ -781,6 +904,7 @@ function App() {
           {activeTab === "games" && (
             <GamesScreen
               games={myGames}
+              selectedGame={selectedGame}
               userById={userById}
               activeUserId={activeUserId}
               leavingGameId={leavingGameId}
@@ -795,13 +919,12 @@ function App() {
               currentUser={currentUser}
               firebaseUser={firebaseUser}
               onSignIn={signIn}
-              onSignOut={() => signOut(auth)}
+              onSignOut={signOutUser}
               duration={duration}
-              setDuration={setDuration}
+              setDuration={updateDefaultReadyNowDuration}
               isAdmin={isAdmin}
               adminBusy={adminBusy}
               onResetTestData={runAdminResetTestData}
-              presence={currentPresence}
               isOffline={currentUser.presence === "offline"}
               onTogglePresence={togglePresence}
               onEditPhoto={() => setPhotoEditorOpen(true)}
@@ -814,6 +937,33 @@ function App() {
             uploading={photoUploading}
             onSave={saveProfilePhoto}
             onClose={() => setPhotoEditorOpen(false)}
+          />
+        )}
+        {onlineSheetOpen && (
+          <OnlinePlayersSheet
+            players={onlinePlayers}
+            activeUserId={activeUserId}
+            availabilityByUserId={activeAvailabilityByUserId}
+            onClose={() => setOnlineSheetOpen(false)}
+          />
+        )}
+        {readyNowSheetOpen && (
+          <ReadyNowSheet
+            duration={readyNowDraftDuration}
+            onDurationChange={setReadyNowDraftDuration}
+            onClose={() => setReadyNowSheetOpen(false)}
+            onConfirm={confirmReadyNowDuration}
+          />
+        )}
+        {windowSheetType && (
+          <AvailabilityWindowSheet
+            type={windowSheetType}
+            startTime={windowDraftStart}
+            endTime={windowDraftEnd}
+            onStartTimeChange={setWindowDraftStart}
+            onEndTimeChange={setWindowDraftEnd}
+            onClose={() => setWindowSheetType(null)}
+            onConfirm={confirmWindowAvailability}
           />
         )}
         {courtPickerGame && (
@@ -847,56 +997,60 @@ function App() {
   );
 }
 
+function SignedOutScreen({ onSignIn, status }: { onSignIn: () => void; status: string }) {
+  const showStatus = status.startsWith("Sign-in failed") || status.includes("unauthorized-domain");
+  return (
+    <section className="signed-out-screen">
+      <div className="signed-out-brand">
+        <Sparkles size={28} />
+        <h1>PaddleUp</h1>
+        <p>Find pickleball playmates when you are ready to play.</p>
+      </div>
+      <button className="signed-out-button" onClick={onSignIn}>
+        Sign In
+      </button>
+      {showStatus && <p className="signed-out-status">{status}</p>}
+    </section>
+  );
+}
+
 function HomeScreen({
   nextGame,
+  activeGame,
   games,
   userById,
   presence,
   counts,
   matchFeedback,
-  futureGroups,
-  activeUserId,
   onSetTab,
   onChooseAvailability,
-  onJoinFuture
+  onViewGame
 }: {
   nextGame?: Game;
+  activeGame?: Game;
   games: Game[];
   userById: Map<string, User>;
   presence: UserPresence;
   counts: ReturnType<typeof pulseCounts>;
   matchFeedback: MatchFeedback | null;
-  futureGroups: AvailabilityGroup[];
-  activeUserId: string;
   onSetTab: (tab: TabKey) => void;
   onChooseAvailability: (mode: Exclude<AvailabilityType, "weekend">) => void;
-  onJoinFuture: (group: AvailabilityGroup) => void;
+  onViewGame: (game: Game) => void;
 }) {
   const forming = games.filter((game) => game.status === "forming");
-  const primaryCta =
-    presence.tone === "matched" || presence.tone === "matching"
-      ? "View My Game"
-      : presence.tone === "available"
-        ? "Update Availability"
-        : "I Want to Play";
-  const onPrimaryCta = () => {
-    if (presence.tone === "matched" || presence.tone === "matching") {
-      onSetTab("games");
-      return;
-    }
-    onChooseAvailability("readyNow");
-  };
 
   return (
     <div className="stack">
-      <StatusCard presence={presence} />
+      <StatusCard presence={presence} game={activeGame} userById={userById} />
       <section className="hero-cta glass-panel">
         <Sparkles className="spark" size={24} />
-        <p>Fastest path to a court</p>
-        <button onClick={onPrimaryCta}>{primaryCta}</button>
+        <p>Want to play now or soon?</p>
+        <button className="hero-primary" onClick={() => onChooseAvailability("readyNow")}>
+          <strong>Find Me Playmates</strong>
+          <span>Click to get a match ASAP. Or below for later/tomorrow.</span>
+        </button>
         <div className="mode-row">
           {[
-            ["readyNow", "Ready Now"],
             ["laterToday", "Later Today"],
             ["tomorrow", "Tomorrow"]
           ].map(([mode, label]) => (
@@ -916,21 +1070,6 @@ function HomeScreen({
         <PulseCard label="Forming" value={counts.formingGames} onClick={() => onSetTab("games")} />
       </section>
 
-      {futureGroups.length > 0 && (
-        <section className="stack">
-          <SectionTitle title="Future Matches" />
-          {futureGroups.slice(0, 4).map((group) => (
-            <FutureAvailabilityCard
-              key={group.id}
-              group={group}
-              userById={userById}
-              activeUserId={activeUserId}
-              onJoin={() => onJoinFuture(group)}
-            />
-          ))}
-        </section>
-      )}
-
       {nextGame && (
         <section className="glass-panel">
           <SectionTitle title="Next Game" action="View Game" onClick={() => onSetTab("games")} />
@@ -939,44 +1078,14 @@ function HomeScreen({
       )}
 
       <section className="stack">
-        <SectionTitle title="Games Forming" />
-        {forming.length === 0 && <p className="empty-copy">No games forming right now. Start with Ready Now when you want to play.</p>}
+        <SectionTitle title="Matches Forming" />
+        {forming.length === 0 && <p className="empty-copy">No matches forming right now. Tap Find Me Playmates when you want to play.</p>}
         {forming.map((game) => (
-          <FormingGame key={game.id} game={game} userById={userById} />
+          <FormingGame key={game.id} game={game} userById={userById} onClick={() => onViewGame(game)} />
         ))}
       </section>
 
     </div>
-  );
-}
-
-function FutureAvailabilityCard({
-  group,
-  userById,
-  activeUserId,
-  onJoin
-}: {
-  group: AvailabilityGroup;
-  userById: Map<string, User>;
-  activeUserId: string;
-  onJoin: () => void;
-}) {
-  const users = group.userIds.map((id) => userById.get(id)).filter((user): user is User => Boolean(user));
-  const joined = group.userIds.includes(activeUserId);
-  const leadUser = users.find((user) => user.uid !== activeUserId) ?? users[0];
-  const title = `${group.type === "tomorrow" ? "Tomorrow" : "Today"} ${formatTime(group.startTime)}-${formatTime(group.endTime)}`;
-
-  return (
-    <article className="future-card glass-panel">
-      <div>
-        <strong>{title}</strong>
-        <span>{leadUser ? `${leadUser.firstName} ${leadUser.lastName}` : "Players"} interested · {group.userIds.length}/4</span>
-      </div>
-      <AvatarStack users={users} missing={Math.max(0, 4 - users.length)} />
-      <button className="court-pill" disabled={joined} onClick={onJoin}>
-        {joined ? "Joined" : "Join"}
-      </button>
-    </article>
   );
 }
 
@@ -1051,6 +1160,7 @@ function PlayersScreen({
 
 function GamesScreen({
   games,
+  selectedGame,
   userById,
   activeUserId,
   leavingGameId,
@@ -1060,6 +1170,7 @@ function GamesScreen({
   onUpdateStartTime
 }: {
   games: Game[];
+  selectedGame?: Game;
   userById: Map<string, User>;
   activeUserId: string;
   leavingGameId: string | null;
@@ -1068,11 +1179,28 @@ function GamesScreen({
   onLeaveGame: (gameId: string) => void;
   onUpdateStartTime: (game: Game, time: string) => void;
 }) {
-  const forming = games.filter((game) => game.status === "forming");
-  const confirmed = games.filter((game) => game.status === "confirmed");
+  const selectedGameCard = selectedGame && (selectedGame.status === "forming" || selectedGame.status === "confirmed") ? selectedGame : undefined;
+  const selectedGameIds = new Set(selectedGameCard ? [selectedGameCard.id] : []);
+  const forming = games.filter((game) => game.status === "forming" && !selectedGameIds.has(game.id));
+  const confirmed = games.filter((game) => game.status === "confirmed" && !selectedGameIds.has(game.id));
 
   return (
     <div className="stack">
+      {selectedGameCard && (
+        <>
+          <SectionTitle title="Selected Game" />
+          <GameCard
+            game={selectedGameCard}
+            userById={userById}
+            activeUserId={activeUserId}
+            isLeaving={leavingGameId === selectedGameCard.id}
+            isUpdatingStartTime={updatingStartTimeGameId === selectedGameCard.id}
+            onAssignCourt={() => onAssignCourt(selectedGameCard)}
+            onLeaveGame={() => onLeaveGame(selectedGameCard.id)}
+            onUpdateStartTime={(time) => onUpdateStartTime(selectedGameCard, time)}
+          />
+        </>
+      )}
       <SectionTitle title="Forming" />
       {forming.length === 0 && <p className="empty-copy">No forming games right now.</p>}
       {forming.map((game) => (
@@ -1180,6 +1308,116 @@ function PhotoEditorSheet({
   );
 }
 
+function OnlinePlayersSheet({
+  players,
+  activeUserId,
+  availabilityByUserId,
+  onClose
+}: {
+  players: User[];
+  activeUserId: string;
+  availabilityByUserId: Map<string, Availability>;
+  onClose: () => void;
+}) {
+  return (
+    <div className="court-sheet-backdrop" role="presentation" onClick={onClose}>
+      <section className="court-sheet online-sheet glass-panel" role="dialog" aria-modal="true" aria-label="Online players" onClick={(event) => event.stopPropagation()}>
+        <SectionTitle title="Online Now" action="Close" onClick={onClose} />
+        <div className="online-list">
+          {players.length === 0 && <p className="empty-copy">No players are online right now.</p>}
+          {players.map((user) => {
+            const availability = availabilityByUserId.get(user.uid);
+            return (
+              <article className="online-player-row" key={user.uid}>
+                <Avatar user={user} />
+                <div>
+                  <strong>{user.firstName} {user.lastName}{user.uid === activeUserId ? " · You" : ""}</strong>
+                  <span>{availability ? availabilityStatus(availability) : locationById.get(user.locationId)?.name}</span>
+                </div>
+                {availability && (
+                  <span className="availability-badge">{availability.type === "readyNow" ? "Now" : availability.type === "tomorrow" ? "Tmrw" : "Today"}</span>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ReadyNowSheet({
+  duration,
+  onDurationChange,
+  onClose,
+  onConfirm
+}: {
+  duration: number;
+  onDurationChange: (duration: number) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="court-sheet-backdrop" role="presentation" onClick={onClose}>
+      <section className="court-sheet glass-panel" role="dialog" aria-modal="true" aria-label="Ready Now window" onClick={(event) => event.stopPropagation()}>
+        <SectionTitle title="Ready Now Window" action="Close" onClick={onClose} />
+        <p>Choose how long you are available to start a game. Your default from Me is already selected.</p>
+        <div className="duration-grid">
+          {[30, 60, 90, 120].map((minutes) => (
+            <button key={minutes} className={duration === minutes ? "selected" : ""} onClick={() => onDurationChange(minutes)}>
+              {minutes}<span>min</span>
+            </button>
+          ))}
+        </div>
+        <button className="primary-action" onClick={onConfirm}>
+          Find Me Playmates
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function AvailabilityWindowSheet({
+  type,
+  startTime,
+  endTime,
+  onStartTimeChange,
+  onEndTimeChange,
+  onClose,
+  onConfirm
+}: {
+  type: "laterToday" | "tomorrow";
+  startTime: string;
+  endTime: string;
+  onStartTimeChange: (time: string) => void;
+  onEndTimeChange: (time: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const title = type === "tomorrow" ? "Tomorrow Window" : "Later Today Window";
+  return (
+    <div className="court-sheet-backdrop" role="presentation" onClick={onClose}>
+      <section className="court-sheet glass-panel" role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
+        <SectionTitle title={title} action="Close" onClick={onClose} />
+        <p>Choose the window when you can start a game.</p>
+        <div className="window-time-grid">
+          <label className="window-time-field">
+            <span>Start</span>
+            <input type="time" step={900} value={startTime} onChange={(event) => onStartTimeChange(event.target.value)} />
+          </label>
+          <label className="window-time-field">
+            <span>End</span>
+            <input type="time" step={900} value={endTime} onChange={(event) => onEndTimeChange(event.target.value)} />
+          </label>
+        </div>
+        <button className="primary-action" onClick={onConfirm}>
+          Find Me Playmates
+        </button>
+      </section>
+    </div>
+  );
+}
+
 function MeScreen({
   currentUser,
   firebaseUser,
@@ -1190,7 +1428,6 @@ function MeScreen({
   isAdmin,
   adminBusy,
   onResetTestData,
-  presence,
   isOffline,
   onTogglePresence,
   onEditPhoto
@@ -1204,14 +1441,12 @@ function MeScreen({
   isAdmin: boolean;
   adminBusy: boolean;
   onResetTestData: () => void;
-  presence: UserPresence;
   isOffline: boolean;
   onTogglePresence: () => void;
   onEditPhoto: () => void;
 }) {
   return (
     <div className="stack">
-      <StatusCard presence={presence} />
       <section className="account-panel glass-panel">
         <button className="avatar-edit-button" onClick={firebaseUser ? onEditPhoto : onSignIn} aria-label="Edit profile photo">
           <Avatar user={currentUser} />
@@ -1220,18 +1455,18 @@ function MeScreen({
           <strong>{firebaseUser ? `${currentUser.firstName} ${currentUser.lastName}` : "PaddleUp Matchmaking"}</strong>
           <span>{firebaseUser ? "Tap your photo to update it." : "Sign in to save availability and matches."}</span>
         </div>
-        <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
-      </section>
-      <section className="glass-panel preference-panel">
-        <SectionTitle title="Visibility" />
-        <p>{isOffline ? "You are hidden from player lists. Existing matches stay active." : "You are visible in player lists."}</p>
-        <button className="ghost-action" onClick={onTogglePresence}>
-          {isOffline ? "Go Visible" : "Go Offline"}
-        </button>
+        <div className="account-actions">
+          <button onClick={firebaseUser ? onSignOut : onSignIn}>{firebaseUser ? "Sign Out" : "Sign In"}</button>
+          {firebaseUser && (
+            <button className="visibility-toggle" onClick={onTogglePresence}>
+              {isOffline ? "Go Visible" : "Go Offline"}
+            </button>
+          )}
+        </div>
       </section>
       <section className="glass-panel preference-panel">
         <SectionTitle title="Default Ready Now Setting" />
-        <p>Used when you click Ready Now.</p>
+        <p>Used when you click Ready Now. This means you are available to start within this many minutes.</p>
         <div className="duration-grid compact">
           {[30, 60, 90, 120].map((minutes) => (
             <button key={minutes} className={duration === minutes ? "selected" : ""} onClick={() => setDuration(minutes)}>
@@ -1262,24 +1497,34 @@ function SectionTitle({ title, action, onClick }: { title: string; action?: stri
   );
 }
 
-function OnlinePill({ count }: { count: number }) {
+function OnlinePill({ count, onClick }: { count: number; onClick: () => void }) {
   return (
-    <div className="online-pill" aria-label={`${count} online players`}>
+    <button className="online-pill" aria-label={`${count} online players. Show online players.`} onClick={onClick}>
       <span />
       <strong>{count}</strong>
       <em>online</em>
-    </div>
+    </button>
   );
 }
 
-function StatusCard({ presence }: { presence: UserPresence }) {
+function StatusCard({ presence, game, userById }: { presence: UserPresence; game?: Game; userById?: Map<string, User> }) {
+  const players = game && userById ? game.playerIds.map((id) => userById.get(id)!).filter(Boolean) : [];
+  const missing = game ? Math.max(0, game.requiredPlayers - game.playerIds.length) : 0;
+
   return (
-    <section className={`status-card glass-panel ${presence.tone}`}>
-      <div>
-        <span>{presence.label}</span>
-        <strong>{presence.detail}</strong>
+    <section className={`status-card glass-panel ${presence.tone} ${game ? "with-game" : ""}`}>
+      <div className="status-copy">
+        <span className="status-pill">{presence.label}</span>
+        {presence.detail && <strong>{presence.detail}</strong>}
         {presence.deadline && <p>{presence.deadline}</p>}
+        {game?.court && <p className="status-court">{game.court}</p>}
       </div>
+      {game && (
+        <div className="status-game">
+          <AvatarStack users={players} missing={missing} />
+          <span>{missing > 0 ? `${missing} needed` : "Players set"}</span>
+        </div>
+      )}
     </section>
   );
 }
@@ -1423,15 +1668,21 @@ function GameCard({
   const missing = game.requiredPlayers - game.playerIds.length;
   const canLeave = Boolean(activeUserId && game.playerIds.includes(activeUserId) && onLeaveGame);
   const canUpdateStartTime = Boolean(!compact && activeUserId && game.status === "confirmed" && game.playerIds.includes(activeUserId) && onUpdateStartTime);
+  const isForming = game.status === "forming";
+  const timing = gameTimeLabel(game);
 
   return (
     <article className={`game-card glass-panel ${game.status}`}>
       <div className="game-meta">
         <div>
-          <strong>{formatDay(game.startsAt)} · {formatTime(game.startsAt)}</strong>
-          <span>{game.type} · {location.name}</span>
+          <strong>{isForming ? "Getting Matched" : timing}</strong>
+          <span>
+            {isForming
+              ? `${game.type} · ${timing} · ${game.playerIds.length}/${game.requiredPlayers} joined · ${missing > 0 ? `${missing} needed` : "Players set"}`
+              : `${game.type} · ${location.name}`}
+          </span>
         </div>
-        <button className="court-pill" onClick={onAssignCourt}>{game.court || "Court TBD"}</button>
+        {(game.court || !isForming) && <button className="court-pill" onClick={onAssignCourt}>{game.court || "Court TBD"}</button>}
       </div>
       <AvatarStack users={players} missing={missing} />
       {canUpdateStartTime && (
@@ -1456,16 +1707,21 @@ function GameCard({
   );
 }
 
-function FormingGame({ game, userById }: { game: Game; userById: Map<string, User> }) {
+function FormingGame({ game, userById, onClick }: { game: Game; userById: Map<string, User>; onClick: () => void }) {
   const missing = game.requiredPlayers - game.playerIds.length;
+  const timing = gameTimeLabel(game);
   return (
-    <article className="forming-row glass-panel">
+    <button className="forming-row glass-panel" onClick={onClick} aria-label={`View forming ${game.type} game`}>
       <div>
-        <strong>{game.type}</strong>
-        <span>{game.playerIds.length}/{game.requiredPlayers} players · Need {missing}</span>
+        <strong>{game.type} · {timing}</strong>
+        <span>{game.playerIds.length}/{game.requiredPlayers} joined · {missing > 0 ? `${missing} needed` : "Players set"}</span>
+        {game.court && <em>{game.court}</em>}
       </div>
-      <AvatarStack users={game.playerIds.map((id) => userById.get(id)!).filter(Boolean)} missing={missing} />
-    </article>
+      <div className="forming-side">
+        <AvatarStack users={game.playerIds.map((id) => userById.get(id)!).filter(Boolean)} missing={missing} />
+        <span>View Match</span>
+      </div>
+    </button>
   );
 }
 
