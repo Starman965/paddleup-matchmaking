@@ -571,7 +571,13 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-weight: 850;
   text-align: right;
 }
-.need-copy { margin: 10px 0 0; color: var(--pkl-muted); font-size: 12px; font-weight: 750; }
+.player-summary {
+  margin: 10px 0 0;
+  color: var(--pkl-muted);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+}
 .empty-copy {
   margin: 0;
   padding: 14px;

@@ -180,6 +180,12 @@ function initials(user: User) {
   return `${first}${last}`;
 }
 
+function shortPlayerName(user: User) {
+  const firstName = user.firstName || user.email.split("@")[0] || "Player";
+  const lastInitial = user.lastName?.[0] ? ` ${user.lastName[0]}.` : "";
+  return `${firstName}${lastInitial}`;
+}
+
 function userFromFirebase(firebaseUser: FirebaseUser, locationId: string): User {
   const [firstName = "", ...lastNameParts] = (firebaseUser.displayName || "").trim().split(/\s+/);
   return {
@@ -1758,6 +1764,7 @@ function GameCard({
   const isForming = game.status === "forming";
   const timing = gameTimeLabel(game);
   const courtLabel = game.court || "Assign Court";
+  const playerSummary = players.length > 0 ? players.map(shortPlayerName).join(" · ") : "No players yet";
 
   return (
     <article className={`game-card glass-panel ${game.status}`}>
@@ -1794,7 +1801,7 @@ function GameCard({
           />
         </label>
       )}
-      {!compact && <p className="need-copy">{missing > 0 ? `Need ${missing} more` : "Players confirmed"}</p>}
+      {!compact && <p className="player-summary">{playerSummary}</p>}
       {!compact && canLeave && (
         <button className="danger-action" disabled={isLeaving} onClick={onLeaveGame}>
           {isLeaving ? "Dropping Out..." : "Drop Out"}
