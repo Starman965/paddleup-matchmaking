@@ -408,7 +408,7 @@ function App() {
     [myGames]
   );
   const nextGame = displayGames.find((game) => game.status === "confirmed" && game.playerIds.includes(activeUserId));
-  const selectedGame = selectedGameId ? displayGames.find((game) => game.id === selectedGameId) : undefined;
+  const selectedGame = selectedGameId ? myGames.find((game) => game.id === selectedGameId) : undefined;
   const courtOptions = activeLocation.courtLabels?.length ? activeLocation.courtLabels : defaultCourtOptions;
   const selectedCourt = courtChoice === "Other" ? customCourt.trim() : courtChoice;
   const isAdmin = Boolean(firebaseUser?.email && adminEmails.has(firebaseUser.email));
@@ -586,6 +586,7 @@ function App() {
     leaveGame(gameId)
       .then(() => {
         trackEvent("game_left", { gameId });
+        if (selectedGameId === gameId) setSelectedGameId(null);
         setFirebaseStatus("You left the game. Other players have been notified.");
       })
       .catch((error: Error) => setFirebaseStatus(`Leaving game failed: ${error.message}`))
