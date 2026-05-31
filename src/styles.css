@@ -613,7 +613,7 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   gap: 7px;
 }
 .forming-side .avatar-stack { margin-top: 0; justify-content: flex-end; }
-.forming-side > span {
+.forming-action {
   display: inline-grid;
   place-items: center;
   min-height: 24px;
@@ -625,6 +625,11 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-weight: 950;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+.forming-action.secondary {
+  color: var(--pkl-text);
+  background: rgba(255,255,255,0.1);
+  box-shadow: inset 0 0 0 1px var(--pkl-line);
 }
 
 .bottom-nav {

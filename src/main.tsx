@@ -19,6 +19,7 @@ import type { Availability, AvailabilityType, Game, Playmate, TabKey, User } fro
 import { auth, googleProvider, initializeAnalytics, trackEvent } from "./firebase";
 import {
   assignGameCourt,
+  joinGame,
   leaveGame,
   markReadyNow,
   resetTestData,
@@ -243,6 +244,7 @@ function App() {
   const [courtChoice, setCourtChoice] = useState(defaultCourtOptions[0]);
   const [customCourt, setCustomCourt] = useState("");
   const [assigningCourt, setAssigningCourt] = useState(false);
+  const [joiningGameId, setJoiningGameId] = useState<string | null>(null);
   const [leavingGameId, setLeavingGameId] = useState<string | null>(null);
   const [updatingStartTimeGameId, setUpdatingStartTimeGameId] = useState<string | null>(null);
   const [activeLocation, setActiveLocation] = useState(locations[0]);
@@ -590,6 +592,62 @@ function App() {
       .finally(() => setLeavingGameId(null));
   }
 
+  function joinSelectedGame(game: Game) {
+    if (!firebaseUser) {
+      setFirebaseStatus("Sign in first, then you can join a match.");
+      return;
+    }
+
+    const targetWindow = gameWindow(game);
+    if (!targetWindow) {
+      setFirebaseStatus("This match does not have a valid play window yet.");
+      return;
+    }
+
+    const overlappingGame = activeGameOverlappingWindow(activeMyGames, targetWindow);
+    if (overlappingGame) {
+      setMatchFeedback({
+        type: (overlappingGame.availabilityType ?? game.availabilityType ?? "readyNow") as Exclude<AvailabilityType, "weekend">,
+        status: "alreadyActive",
+        title: "Time Window Already Booked",
+        body:
+          overlappingGame.status === "confirmed"
+            ? `You already have a confirmed game during ${gameTimeLabel(overlappingGame)}. Drop out first if you need to change that time.`
+            : `${overlappingGame.playerIds.length}/${overlappingGame.requiredPlayers} players are already in your forming game for ${gameTimeLabel(overlappingGame)}.`
+      });
+      setFirebaseStatus("You are already in a match during that time window.");
+      return;
+    }
+
+    const matchType = (game.availabilityType ?? "readyNow") as Exclude<AvailabilityType, "weekend">;
+    setJoiningGameId(game.id);
+    setMatchFeedback({
+      type: matchType,
+      status: "saving",
+      title: "Joining Match",
+      body: `Trying to join the ${gameTimeLabel(game)} match.`,
+      previousGameIds: displayGames.filter((displayGame) => displayGame.status === "forming" || displayGame.status === "confirmed").map((displayGame) => displayGame.id)
+    });
+
+    joinGame(game.id)
+      .then(() => {
+        trackEvent("game_joined", { gameId: game.id, availabilityType: game.availabilityType ?? "readyNow" });
+        setSelectedGameId(game.id);
+        setActiveTab("games");
+        setFirebaseStatus("You joined the match.");
+      })
+      .catch((error: Error) => {
+        setMatchFeedback({
+          type: matchType,
+          status: "error",
+          title: "Join Failed",
+          body: error.message
+        });
+        setFirebaseStatus(`Join failed: ${error.message}`);
+      })
+      .finally(() => setJoiningGameId(null));
+  }
+
   function updateSelectedGameStartTime(game: Game, time: string) {
     if (!firebaseUser) {
       setFirebaseStatus("Sign in first, then you can update the start time.");
@@ -899,11 +957,14 @@ function App() {
               activeGame={activeMyGames[0]}
               games={displayGames}
               userById={userById}
+              activeUserId={activeUserId}
               presence={currentPresence}
               matchFeedback={matchFeedback}
+              joiningGameId={joiningGameId}
               onSetTab={setActiveTab}
               onChooseAvailability={chooseHomeAvailability}
               onViewGame={viewSelectedGame}
+              onJoinGame={joinSelectedGame}
             />
           )}
           {activeTab === "players" && (
@@ -1037,21 +1098,27 @@ function HomeScreen({
   activeGame,
   games,
   userById,
+  activeUserId,
   presence,
   matchFeedback,
+  joiningGameId,
   onSetTab,
   onChooseAvailability,
-  onViewGame
+  onViewGame,
+  onJoinGame
 }: {
   nextGame?: Game;
   activeGame?: Game;
   games: Game[];
   userById: Map<string, User>;
+  activeUserId: string;
   presence: UserPresence;
   matchFeedback: MatchFeedback | null;
+  joiningGameId: string | null;
   onSetTab: (tab: TabKey) => void;
   onChooseAvailability: (mode: Exclude<AvailabilityType, "weekend">) => void;
   onViewGame: (game: Game) => void;
+  onJoinGame: (game: Game) => void;
 }) {
   const forming = games.filter((game) => game.status === "forming");
 
@@ -1090,7 +1157,15 @@ function HomeScreen({
         <SectionTitle title="Matches Forming" />
         {forming.length === 0 && <p className="empty-copy">No matches forming right now. Tap Find Me Playmates when you want to play.</p>}
         {forming.map((game) => (
-          <FormingGame key={game.id} game={game} userById={userById} onClick={() => onViewGame(game)} />
+          <FormingGame
+            key={game.id}
+            game={game}
+            userById={userById}
+            activeUserId={activeUserId}
+            isJoining={joiningGameId === game.id}
+            onView={() => onViewGame(game)}
+            onJoin={() => onJoinGame(game)}
+          />
         ))}
       </section>
 
@@ -1717,11 +1792,26 @@ function GameCard({
   );
 }
 
-function FormingGame({ game, userById, onClick }: { game: Game; userById: Map<string, User>; onClick: () => void }) {
+function FormingGame({
+  game,
+  userById,
+  activeUserId,
+  isJoining,
+  onView,
+  onJoin
+}: {
+  game: Game;
+  userById: Map<string, User>;
+  activeUserId: string;
+  isJoining: boolean;
+  onView: () => void;
+  onJoin: () => void;
+}) {
   const missing = game.requiredPlayers - game.playerIds.length;
   const timing = gameTimeLabel(game);
+  const isInGame = game.playerIds.includes(activeUserId);
   return (
-    <button className="forming-row glass-panel" onClick={onClick} aria-label={`View forming ${game.type} game`}>
+    <article className="forming-row glass-panel">
       <div>
         <strong>{game.type}</strong>
         <span className="forming-window">Play window: {timing}</span>
@@ -1730,9 +1820,15 @@ function FormingGame({ game, userById, onClick }: { game: Game; userById: Map<st
       </div>
       <div className="forming-side">
         <AvatarStack users={game.playerIds.map((id) => userById.get(id)!).filter(Boolean)} missing={missing} />
-        <span>View Match</span>
+        {isInGame ? (
+          <button className="forming-action secondary" onClick={onView}>View Match</button>
+        ) : (
+          <button className="forming-action" disabled={isJoining || missing <= 0} onClick={onJoin}>
+            {isJoining ? "Joining..." : "Join Match"}
+          </button>
+        )}
       </div>
-    </button>
+    </article>
   );
 }
 

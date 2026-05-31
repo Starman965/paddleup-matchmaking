@@ -139,6 +139,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     const gameRef = formingDoc ? formingDoc.ref : db.collection("games").doc();
     const existing = formingDoc ? (formingDoc.data() as Game) : undefined;
     const existingPlayers = existing?.playerIds ?? [];
+    const existingWindow = existing ? gameWindow(existing) : undefined;
     const activeGameConflicts = new Map<string, WindowRange[]>();
 
     for (const gameDoc of [...formingSnapshot.docs, ...confirmedSnapshot.docs]) {
@@ -153,7 +154,19 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       }
     }
 
-    const selection = selectAvailabilityGroup(candidates, existingPlayers, activeGameConflicts, disabledPairs);
+    const selectionCandidates = [...candidates];
+    if (existingWindow) {
+      for (const playerId of existingPlayers) {
+        if (selectionCandidates.some((candidate) => candidate.userId === playerId)) continue;
+        selectionCandidates.push({
+          userId: playerId,
+          availabilityId: `${gameRef.id}_${playerId}_directJoin`,
+          ...existingWindow
+        });
+      }
+    }
+
+    const selection = selectAvailabilityGroup(selectionCandidates, existingPlayers, activeGameConflicts, disabledPairs);
     const candidatePlayerIds = unique([...existingPlayers, ...candidates.map((candidate) => candidate.userId)]);
     const skippedPlayerIds = candidates
       .filter((candidate) => hasOverlappingGame(candidate, activeGameConflicts))
@@ -297,6 +310,126 @@ export const assignCourt = onCall(async (request) => {
 
   logger.info("Court assigned", { gameId, court, assignedBy: uid });
   return { gameId, court };
+});
+
+export const joinGame = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sign in before joining a match.");
+  }
+
+  const gameId = typeof request.data?.gameId === "string" ? request.data.gameId : "";
+  if (!gameId) {
+    throw new HttpsError("invalid-argument", "Missing game ID.");
+  }
+
+  const gameRef = db.collection("games").doc(gameId);
+  const disabledPlaymateSnapshot = await db.collection("playmates").where("enabled", "==", false).get();
+  const disabledPairs = disabledPlaymateSnapshot.docs
+    .map((doc) => doc.data() as Playmate)
+    .filter((playmate) => playmate.userId && playmate.playmateId)
+    .map((playmate) => pairKey(playmate.userId!, playmate.playmateId!));
+
+  await db.runTransaction(async (transaction) => {
+    const gameSnapshot = await transaction.get(gameRef);
+    if (!gameSnapshot.exists) {
+      throw new HttpsError("not-found", "Match not found.");
+    }
+
+    const game = gameSnapshot.data() as Game;
+    if (game.status !== "forming") {
+      throw new HttpsError("failed-precondition", "Only forming matches can be joined.");
+    }
+
+    if (game.playerIds.includes(uid)) {
+      return;
+    }
+
+    if (game.playerIds.length >= game.requiredPlayers) {
+      throw new HttpsError("failed-precondition", "This match is already full.");
+    }
+
+    const targetWindow = gameWindow(game);
+    if (!targetWindow) {
+      throw new HttpsError("failed-precondition", "This match does not have a valid play window.");
+    }
+
+    const incompatiblePlayerId = game.playerIds.find((playerId) => disabledPairs.includes(pairKey(uid, playerId)));
+    if (incompatiblePlayerId) {
+      throw new HttpsError("failed-precondition", "This match includes a removed playmate.");
+    }
+
+    const formingQuery = db
+      .collection("games")
+      .where("locationId", "==", game.locationId)
+      .where("status", "==", "forming");
+    const confirmedQuery = db
+      .collection("games")
+      .where("locationId", "==", game.locationId)
+      .where("status", "==", "confirmed");
+    const [formingSnapshot, confirmedSnapshot] = await Promise.all([
+      transaction.get(formingQuery),
+      transaction.get(confirmedQuery)
+    ]);
+
+    const overlappingGame = [...formingSnapshot.docs, ...confirmedSnapshot.docs].find((doc) => {
+      if (doc.id === gameRef.id) return false;
+      const activeGame = doc.data() as Partial<Game>;
+      if (!(activeGame.playerIds ?? []).includes(uid)) return false;
+      const activeWindow = gameWindow(activeGame);
+      return Boolean(activeWindow && windowsOverlap(targetWindow, activeWindow));
+    });
+
+    if (overlappingGame) {
+      throw new HttpsError("failed-precondition", "You are already in a match during this time window.");
+    }
+
+    const playerIds = unique([...game.playerIds, uid]);
+    const status = playerIds.length >= game.requiredPlayers ? "confirmed" : "forming";
+    const meetTime =
+      status === "confirmed"
+        ? game.availabilityType === "readyNow"
+          ? new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000).toISOString()
+          : game.startsAt
+        : game.meetTime;
+    const startsAt = status === "confirmed" && meetTime ? meetTime : game.startsAt;
+
+    transaction.update(gameRef, {
+      playerIds,
+      status,
+      startsAt,
+      ...(meetTime ? { meetTime } : {}),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+
+    const notificationType = status === "confirmed" ? "gameConfirmed" : "formingGame";
+    const notificationTitle = status === "confirmed" ? "Doubles confirmed" : `Doubles forming: ${playerIds.length}/4`;
+    const notificationBody =
+      status === "confirmed"
+        ? `${availabilityLabel(game.availabilityType ?? "readyNow")} match confirmed. Court TBD.`
+        : `Need ${game.requiredPlayers - playerIds.length} more at Blackhawk.`;
+
+    for (const playerId of playerIds) {
+      const notificationRef = db.collection("notifications").doc(`${gameRef.id}_${notificationType}_${playerId}`);
+      transaction.set(
+        notificationRef,
+        {
+          id: notificationRef.id,
+          userId: playerId,
+          gameId: gameRef.id,
+          type: notificationType,
+          title: notificationTitle,
+          body: notificationBody,
+          read: false,
+          createdAt: FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+    }
+  });
+
+  logger.info("Player joined game", { gameId, userId: uid });
+  return { gameId };
 });
 
 export const updateGameStartTime = onCall(async (request) => {

@@ -277,6 +277,11 @@ export async function assignGameCourt(gameId: string, court: string) {
   await assignCourt({ gameId, court });
 }
 
+export async function joinGame(gameId: string) {
+  const callable = httpsCallable<{ gameId: string }, { gameId: string }>(functions, "joinGame");
+  await callable({ gameId });
+}
+
 export async function updateGameStartTime(gameId: string, startsAt: string) {
   const callable = httpsCallable<{ gameId: string; startsAt: string }, { gameId: string; startsAt: string }>(
     functions,
