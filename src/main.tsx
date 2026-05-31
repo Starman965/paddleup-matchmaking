@@ -109,8 +109,19 @@ function availabilityStatus(availability: Availability) {
   return `${availability.type === "tomorrow" ? "Tomorrow" : "Today"} ${formatTime(availability.startTime)}-${formatTime(availability.endTime)}`;
 }
 
+function readyNowGameLabel(game: Game) {
+  if (!game.endsAt) return "Ready Now";
+  const endsAt = new Date(game.endsAt);
+  if (Number.isNaN(endsAt.getTime())) return "Ready Now";
+
+  const remainingMinutes = Math.ceil((endsAt.getTime() - Date.now()) / 60000);
+  if (remainingMinutes <= 0) return "Ready Now · closing now";
+  if (remainingMinutes <= 15) return `Ready Now · ${remainingMinutes} min left`;
+  return `Ready Now · until ${formatTime(game.endsAt)}`;
+}
+
 function gameTimeLabel(game: Game) {
-  if (game.status === "forming" && game.availabilityType === "readyNow") return "Ready Now";
+  if (game.status === "forming" && game.availabilityType === "readyNow") return readyNowGameLabel(game);
   if (game.startsAt && game.endsAt && (game.availabilityType === "laterToday" || game.availabilityType === "tomorrow")) {
     return `${formatDay(game.startsAt)} · ${formatTime(game.startsAt)}-${formatTime(game.endsAt)}`;
   }
