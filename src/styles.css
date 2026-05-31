@@ -20,16 +20,36 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; }
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: #050b18;
+  position: fixed;
+  inset: 0;
+}
 button, input { font: inherit; }
 button { border: 0; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.58; }
 
 .app-shell {
-  min-height: 100vh;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
   display: grid;
   place-items: center;
   padding: 20px;
+  overflow: hidden;
+  overscroll-behavior: none;
   background:
     radial-gradient(circle at 20% 0%, rgba(255, 216, 61, 0.14), transparent 32%),
     radial-gradient(circle at 100% 18%, rgba(34, 197, 94, 0.12), transparent 30%),
@@ -39,6 +59,7 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
 .phone-frame {
   width: min(100%, 430px);
   height: min(880px, calc(100vh - 24px));
+  height: min(880px, calc(100dvh - 24px));
   min-height: 640px;
   overflow: hidden;
   position: relative;
@@ -51,6 +72,8 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
     radial-gradient(circle at 80% 12%, rgba(255, 216, 61, 0.1), transparent 28%);
   box-shadow: 0 26px 80px rgba(0, 0, 0, 0.38), inset 0 0 0 1px rgba(255,255,255,0.08);
   backdrop-filter: blur(22px);
+  isolation: isolate;
+  overscroll-behavior: none;
 }
 
 .phone-frame::before {
@@ -129,7 +152,7 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 12px;
-  padding: 16px 18px 10px;
+  padding: calc(16px + env(safe-area-inset-top, 0px)) 18px 10px;
 }
 .top-bar h1 { margin: 0; font-size: 30px; line-height: 1; letter-spacing: 0; }
 .location-kicker {
@@ -209,9 +232,12 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   position: relative;
   z-index: 1;
   flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
-  padding: 8px 18px 116px;
+  padding: 8px 18px calc(116px + env(safe-area-inset-bottom, 0px));
   scrollbar-width: none;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .screen::-webkit-scrollbar { display: none; }
 .stack { display: grid; gap: 14px; }
@@ -412,7 +438,7 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   inset: 0;
   display: flex;
   align-items: flex-end;
-  padding: 18px 14px 96px;
+  padding: 18px 14px calc(96px + env(safe-area-inset-bottom, 0px));
   background: linear-gradient(180deg, rgba(13, 31, 20, 0.06), rgba(13, 31, 20, 0.28));
   backdrop-filter: blur(6px);
 }
@@ -635,7 +661,7 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
 .bottom-nav {
   position: absolute;
   z-index: 4;
-  inset: auto 12px 10px;
+  inset: auto 12px max(10px, env(safe-area-inset-bottom, 0px));
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 4px;
@@ -968,14 +994,23 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
 }
 
 @media (max-width: 520px) {
-  .app-shell { padding: 0; }
+  .app-shell {
+    height: 100vh;
+    height: 100svh;
+    padding: 0;
+  }
   .phone-frame {
     width: 100vw;
     height: 100vh;
+    height: 100svh;
     min-height: 100vh;
+    min-height: 100svh;
     border: 0;
     border-radius: 0;
   }
   .top-bar h1 { font-size: 28px; }
-  .screen { padding-inline: 14px; }
+  .screen {
+    padding-inline: 14px;
+    padding-bottom: calc(112px + env(safe-area-inset-bottom, 0px));
+  }
 }
