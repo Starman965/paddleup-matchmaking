@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "prebuild": "node scripts/generate-version.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
@@ -12,6 +13,7 @@
     "@vitejs/plugin-react": "^5.0.0",
     "firebase": "^12.14.0",
     "lucide-react": "^0.468.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.8.0",

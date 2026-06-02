@@ -6,8 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     headers: {
-      "Cache-Control": "no-store",
-      "Clear-Site-Data": "\"cache\", \"storage\""
+      "Cache-Control": "no-store"
     }
   }
 });

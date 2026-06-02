@@ -7,7 +7,7 @@ import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDcYIHguD40ELnq0r-js2FiQcsPvcQP6JE",
-  authDomain: "paddleup-match-maker.firebaseapp.com",
+  authDomain: "paddleup-match-maker.web.app",
   projectId: "paddleup-match-maker",
   storageBucket: "paddleup-match-maker.firebasestorage.app",
   messagingSenderId: "888824877047",

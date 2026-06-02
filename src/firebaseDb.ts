@@ -16,7 +16,41 @@ import type { User as FirebaseUser } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { db, functions, storage } from "./firebase";
-import type { Availability, Game, Location, Playmate, User } from "./domain";
+import type { Availability, Game, Location, Playmate, User, WebPushSubscription } from "./domain";
+
+export type AdminLocation = Location & {
+  active?: boolean;
+};
+
+export type AdminLocationSuggestion = {
+  id: string;
+  userId: string;
+  name: string;
+  city: string;
+  state: string;
+  country: string;
+  courtCount: number;
+  status: string;
+  createdAt?: string;
+};
+
+export type AdminDashboard = {
+  users: number;
+  games: number;
+  formingGames: number;
+  confirmedGames: number;
+  completedGames: number;
+  locations: number;
+  pendingLocationSuggestions: number;
+  locationRows: AdminLocation[];
+};
+
+export type AdminResetResult = {
+  deletedCount: number;
+  games: number;
+  availability: number;
+  notifications: number;
+};
 
 function timestampToIso(value: unknown) {
   if (!value) return new Date().toISOString();
@@ -59,6 +93,7 @@ function userFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): User {
     email: readString(data.email),
     photoUrl: readString(data.photoUrl),
     locationId: readString(data.locationId, "blackhawk"),
+    homeLocationId: readString(data.homeLocationId),
     presence: data.presence === "offline" ? "offline" : "visible",
     defaultReadyNowDuration: readNumber(data.defaultReadyNowDuration, 60),
     isTestUser: data.isTestUser === true
@@ -71,6 +106,12 @@ function locationFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Lo
     id: readString(data.id, snapshot.id),
     name: readString(data.name, "PaddleUp Location"),
     type: data.type === "publicCourt" || data.type === "resort" || data.type === "destination" ? data.type : "club",
+    city: readString(data.city),
+    state: readString(data.state),
+    country: readString(data.country),
+    imageUrl: readString(data.imageUrl),
+    subtitle: readString(data.subtitle),
+    courtCount: readNumber(data.courtCount, readStringArray(data.courtLabels).length),
     courtLabels: readStringArray(data.courtLabels)
   };
 }
@@ -122,6 +163,25 @@ function playmateFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Pl
   };
 }
 
+function webPushSubscriptionFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): WebPushSubscription {
+  const data = snapshot.data();
+  const keys = typeof data.keys === "object" && data.keys ? data.keys as Record<string, unknown> : {};
+  return {
+    id: readString(data.id, snapshot.id),
+    userId: readString(data.userId),
+    locationId: readString(data.locationId, "blackhawk"),
+    endpoint: readString(data.endpoint),
+    keys: {
+      p256dh: readString(keys.p256dh),
+      auth: readString(keys.auth)
+    },
+    platform: readString(data.platform, "unknown"),
+    browser: readString(data.browser, "unknown"),
+    standalone: data.standalone === true,
+    enabled: data.enabled !== false
+  };
+}
+
 export async function upsertCurrentUser(firebaseUser: FirebaseUser, locationId: string) {
   const [firstName = "", ...lastNameParts] = (firebaseUser.displayName || "").trim().split(/\s+/);
   const lastName = lastNameParts.join(" ");
@@ -129,6 +189,8 @@ export async function upsertCurrentUser(firebaseUser: FirebaseUser, locationId: 
   const existingUser = await getDoc(userRef);
   const existingPhotoUrl = existingUser.exists() ? readString(existingUser.data().photoUrl) : "";
   const existingPresence = existingUser.exists() && existingUser.data().presence === "offline" ? "offline" : "visible";
+  const existingLocationId = existingUser.exists() ? readString(existingUser.data().locationId, locationId) : locationId;
+  const existingHomeLocationId = existingUser.exists() ? readString(existingUser.data().homeLocationId) : "";
 
   await setDoc(
     userRef,
@@ -138,12 +200,58 @@ export async function upsertCurrentUser(firebaseUser: FirebaseUser, locationId: 
       lastName,
       email: firebaseUser.email || "",
       photoUrl: existingPhotoUrl || firebaseUser.photoURL || "",
-      locationId,
+      locationId: existingLocationId,
+      homeLocationId: existingHomeLocationId,
       presence: existingPresence,
       updatedAt: serverTimestamp()
     },
     { merge: true }
   );
+}
+
+export async function setUserHomeLocation(userId: string, locationId: string) {
+  await updateDoc(doc(db, "users", userId), {
+    homeLocationId: locationId,
+    locationId,
+    updatedAt: serverTimestamp()
+  });
+}
+
+export async function setUserHomeLocationPreference(userId: string, locationId: string) {
+  await updateDoc(doc(db, "users", userId), {
+    homeLocationId: locationId,
+    updatedAt: serverTimestamp()
+  });
+}
+
+export async function suggestLocation({
+  userId,
+  name,
+  city,
+  state,
+  country,
+  courtCount
+}: {
+  userId: string;
+  name: string;
+  city: string;
+  state: string;
+  country: string;
+  courtCount?: number;
+}) {
+  const suggestionRef = doc(collection(db, "locationSuggestions"));
+  await setDoc(suggestionRef, {
+    id: suggestionRef.id,
+    userId,
+    name,
+    city,
+    state,
+    country,
+    courtCount: courtCount && Number.isFinite(courtCount) ? courtCount : null,
+    status: "pending",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
 }
 
 export async function uploadProfilePhoto(userId: string, photo: Blob) {
@@ -160,9 +268,22 @@ export async function uploadProfilePhoto(userId: string, photo: Blob) {
   return photoUrl;
 }
 
-export async function markReadyNow(userId: string, locationId: string, durationMinutes: number) {
+export async function uploadLocationPhoto(locationId: string, photo: Blob) {
+  const photoRef = ref(storage, `locationPhotos/${locationId}/cover.webp`);
+  await uploadBytes(photoRef, photo, {
+    contentType: "image/webp",
+    cacheControl: "public,max-age=3600"
+  });
+  return getDownloadURL(photoRef);
+}
+
+export async function markReadyNow(userId: string, locationId: string, durationMinutes: number, deadlineIso?: string) {
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + durationMinutes * 60 * 1000);
+  const requestedDeadline = deadlineIso ? new Date(deadlineIso) : undefined;
+  const expiresAt =
+    requestedDeadline && !Number.isNaN(requestedDeadline.getTime()) && requestedDeadline > now
+      ? requestedDeadline
+      : new Date(now.getTime() + durationMinutes * 60 * 1000);
   const availabilityId = `${userId}_readyNow`;
 
   await setDoc(doc(db, "availability", availabilityId), {
@@ -220,6 +341,20 @@ export function subscribeLocationUsers(locationId: string, onUsers: (users: User
   );
 }
 
+export function subscribeUser(userId: string, onUser: (user: User | undefined) => void, onError: (error: Error) => void): Unsubscribe {
+  return onSnapshot(doc(db, "users", userId), (snapshot) => {
+    onUser(snapshot.exists() ? userFromSnapshot(snapshot as QueryDocumentSnapshot<DocumentData>) : undefined);
+  }, onError);
+}
+
+export function subscribeLocations(onLocations: (locations: Location[]) => void, onError: (error: Error) => void): Unsubscribe {
+  return onSnapshot(
+    collection(db, "locations"),
+    (snapshot) => onLocations(snapshot.docs.filter((doc) => doc.data().active !== false).map(locationFromSnapshot).sort((a, b) => a.name.localeCompare(b.name))),
+    onError
+  );
+}
+
 export function subscribeLocation(locationId: string, onLocation: (location: Location) => void, onError: (error: Error) => void): Unsubscribe {
   return onSnapshot(doc(db, "locations", locationId), (snapshot) => {
     if (snapshot.exists()) onLocation(locationFromSnapshot(snapshot as QueryDocumentSnapshot<DocumentData>));
@@ -241,6 +376,14 @@ export function subscribeLocationAvailability(
 export function subscribeLocationGames(locationId: string, onGames: (games: Game[]) => void, onError: (error: Error) => void): Unsubscribe {
   return onSnapshot(
     query(collection(db, "games"), where("locationId", "==", locationId)),
+    (snapshot) => onGames(snapshot.docs.map(gameFromSnapshot)),
+    onError
+  );
+}
+
+export function subscribeUserGames(userId: string, onGames: (games: Game[]) => void, onError: (error: Error) => void): Unsubscribe {
+  return onSnapshot(
+    query(collection(db, "games"), where("playerIds", "array-contains", userId)),
     (snapshot) => onGames(snapshot.docs.map(gameFromSnapshot)),
     onError
   );
@@ -272,6 +415,64 @@ export async function setPlaymateEnabled(userId: string, playmateId: string, ena
   );
 }
 
+export function subscribeUserWebPushSubscriptions(
+  userId: string,
+  onSubscriptions: (subscriptions: WebPushSubscription[]) => void,
+  onError: (error: Error) => void
+): Unsubscribe {
+  return onSnapshot(
+    query(collection(db, "pushSubscriptions"), where("userId", "==", userId)),
+    (snapshot) => onSubscriptions(snapshot.docs.map(webPushSubscriptionFromSnapshot)),
+    onError
+  );
+}
+
+export async function saveWebPushSubscription({
+  userId,
+  locationId,
+  subscription,
+  platform,
+  browser,
+  standalone
+}: {
+  userId: string;
+  locationId: string;
+  subscription: PushSubscription;
+  platform: string;
+  browser: string;
+  standalone: boolean;
+}) {
+  const serialized = subscription.toJSON();
+  const endpoint = serialized.endpoint;
+  const p256dh = serialized.keys?.p256dh;
+  const auth = serialized.keys?.auth;
+
+  if (!endpoint || !p256dh || !auth) {
+    throw new Error("Push subscription is missing required keys.");
+  }
+
+  const endpointHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
+  const subscriptionId = Array.from(new Uint8Array(endpointHash)).map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 32);
+  await setDoc(
+    doc(db, "pushSubscriptions", subscriptionId),
+    {
+      id: subscriptionId,
+      userId,
+      locationId,
+      endpoint,
+      keys: { p256dh, auth },
+      platform,
+      browser,
+      standalone,
+      enabled: true,
+      lastSeenAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdAt: serverTimestamp()
+    },
+    { merge: true }
+  );
+}
+
 export async function assignGameCourt(gameId: string, court: string) {
   const assignCourt = httpsCallable<{ gameId: string; court: string }, { gameId: string; court: string }>(functions, "assignCourt");
   await assignCourt({ gameId, court });
@@ -297,7 +498,7 @@ export async function leaveGame(gameId: string) {
 }
 
 export async function resetTestData() {
-  const callable = httpsCallable<Record<string, never>, { deletedCount: number }>(functions, "resetTestData");
+  const callable = httpsCallable<Record<string, never>, AdminResetResult>(functions, "resetTestData");
   const result = await callable({});
   return result.data;
 }
@@ -308,5 +509,38 @@ export async function updateLocationCourts(locationId: string, courtLabels: stri
     "updateLocationCourts"
   );
   const result = await callable({ locationId, courtLabels });
+  return result.data;
+}
+
+export async function getAdminDashboard() {
+  const callable = httpsCallable<Record<string, never>, AdminDashboard>(functions, "getAdminDashboard");
+  const result = await callable({});
+  return result.data;
+}
+
+export async function listLocationSuggestions() {
+  const callable = httpsCallable<Record<string, never>, { suggestions: AdminLocationSuggestion[] }>(functions, "listLocationSuggestions");
+  const result = await callable({});
+  return result.data.suggestions;
+}
+
+export async function approveLocationSuggestion(suggestionId: string, location: AdminLocation) {
+  const callable = httpsCallable<{ suggestionId: string; location: AdminLocation }, { suggestionId: string; locationId: string }>(
+    functions,
+    "approveLocationSuggestion"
+  );
+  const result = await callable({ suggestionId, location });
+  return result.data;
+}
+
+export async function rejectLocationSuggestion(suggestionId: string) {
+  const callable = httpsCallable<{ suggestionId: string }, { suggestionId: string }>(functions, "rejectLocationSuggestion");
+  const result = await callable({ suggestionId });
+  return result.data;
+}
+
+export async function upsertLocation(location: AdminLocation) {
+  const callable = httpsCallable<{ location: AdminLocation }, { locationId: string }>(functions, "upsertLocation");
+  const result = await callable({ location });
   return result.data;
 }

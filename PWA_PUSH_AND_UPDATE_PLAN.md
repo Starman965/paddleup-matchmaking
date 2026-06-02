@@ -38,6 +38,18 @@ Why:
 
 Still design the system so Android Chrome and desktop Chrome/Safari can be supported later without rewriting the model.
 
+## Current Implementation Status
+
+As of June 1, 2026:
+
+- PaddleUp uses standard Web Push, not Firebase Cloud Messaging web push.
+- The service worker handles raw `push` events and displays notifications from payload data.
+- Cloud Functions use the `web-push` package and the `WEB_PUSH_VAPID_PRIVATE_KEY` secret.
+- The frontend stores subscriptions in `pushSubscriptions`, scoped by `userId` and `locationId`.
+- Users enable alerts explicitly from Profile. Passive actions must not request notification permission.
+- Location switching refreshes push subscription metadata only when `Notification.permission === "granted"`.
+- FCM web push was removed because iOS Safari/Home Screen behavior was not reliable for the MVP path.
+
 ## Platform Reality
 
 ### iPhone Safari
@@ -250,7 +262,7 @@ Add a dedicated collection rather than overloading `users/{uid}`.
 Recommended collection:
 
 ```text
-pushTokens/{tokenId}
+pushSubscriptions/{subscriptionId}
 ```
 
 Suggested shape:
@@ -260,8 +272,11 @@ Suggested shape:
   "id": "",
   "userId": "",
   "locationId": "blackhawk",
-  "provider": "fcm",
-  "token": "",
+  "endpoint": "",
+  "keys": {
+    "p256dh": "",
+    "auth": ""
+  },
   "platform": "ios",
   "browser": "safari",
   "standalone": true,
@@ -275,14 +290,14 @@ Suggested shape:
 Why separate collection:
 
 - One user can have multiple devices.
-- Tokens expire or rotate.
-- Easier to disable one broken token without changing the user's profile.
-- Easier for Cloud Functions to query all tokens for a player.
+- Subscriptions expire, are revoked, or become invalid.
+- Easier to disable/delete one broken subscription without changing the user's profile.
+- Easier for Cloud Functions to query all subscriptions for a player.
 
 Security:
 
-- Users can create/update/delete only their own token docs.
-- Clients should not be able to write arbitrary users' tokens.
+- Users can create/update/delete only their own subscription docs.
+- Clients should not be able to write arbitrary users' subscriptions.
 - Cloud Functions use Admin SDK for sending.
 
 ## Backend Push Flow
@@ -292,9 +307,9 @@ Cloud Functions should send push after the same events that create Firestore not
 Current app already has in-app notifications. Push should be layered on top:
 
 1. Backend creates `notifications/{id}`.
-2. Backend loads enabled push tokens for `userId`.
-3. Backend sends push to each token.
-4. If FCM reports a token is invalid/unregistered, backend disables or deletes that token.
+2. Backend loads enabled Web Push subscriptions for `userId`.
+3. Backend sends Web Push to each subscription.
+4. If Web Push reports an expired/invalid subscription, backend deletes it.
 
 Do not make push the source of truth. Firestore notifications remain the durable in-app record.
 
@@ -531,10 +546,10 @@ Success criteria:
 Deliverables:
 
 - Notification permission UI only after install/standalone.
-- Firebase Messaging setup.
-- Token registration.
-- `pushTokens` collection and rules.
-- Token refresh/update handling.
+- Standard Web Push setup.
+- Push subscription registration.
+- `pushSubscriptions` collection and rules.
+- Subscription refresh/update handling.
 - Me/Profile alert status.
 
 Success criteria:
@@ -594,7 +609,7 @@ For each:
 ## Suggested Cursor Starting Prompt
 
 ```text
-Read PWA_PUSH_AND_UPDATE_PLAN.md, CURSOR_HANDOFF.md, public/sw.js, firebase.json, src/main.tsx, src/firebase.ts, and src/firebaseDb.ts. Implement Phase 1 only: PWA install guidance and app-update detection. Do not implement Firebase Messaging yet. Keep iPhone Safari/Home Screen as the primary MVP path, show iPhone Chrome users guidance to open Safari for alerts, and add a Me/Profile update status with an Update Now action. Be careful with service-worker caching: real-time matchmaking must not serve stale app shells or stale Firestore/Auth responses.
+Read PWA_PUSH_AND_UPDATE_PLAN.md, CURSOR_HANDOFF.md, public/sw.js, firebase.json, src/main.tsx, src/pwa.ts, src/pushNotifications.ts, src/firebase.ts, src/firebaseDb.ts, and functions/src/index.ts. The app already has PWA install guidance, update detection, standard Web Push, and backend push sends. Do not reintroduce Firebase Messaging web push without retesting iOS Safari/Home Screen behavior. Continue QA on real iPhone Safari/Home Screen installs, keep notification permission explicit from Profile, and ensure passive actions such as sign-in, first-run location selection, and location switching never trigger the browser permission prompt.
 ```
 
 ## Reference Links

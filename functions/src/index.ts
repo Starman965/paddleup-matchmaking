@@ -1,9 +1,11 @@
 import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
-import { onDocumentWritten } from "firebase-functions/v2/firestore";
+import { defineSecret } from "firebase-functions/params";
+import { onDocumentCreated, onDocumentWritten } from "firebase-functions/v2/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { logger } from "firebase-functions";
+import webpush from "web-push";
 
 initializeApp();
 
@@ -14,6 +16,9 @@ const MATCH_LEAD_TIME_MINUTES = 30;
 const MINIMUM_MATCH_OVERLAP_MINUTES = 30;
 const GAME_CLOSE_GRACE_MINUTES = 15;
 const ADMIN_EMAILS = new Set(["demandgendave@gmail.com"]);
+const WEB_PUSH_VAPID_PUBLIC_KEY = "BHvIGy1DWxNdPSQ7UST5NUvjRgfEjdO93lyUkqtED9h8QxKXopr_5zwchGFg2FdSTjypgSUXuYDFt13c4sew6JQ";
+const WEB_PUSH_CONTACT = "mailto:demandgendave@gmail.com";
+const webPushVapidPrivateKey = defineSecret("WEB_PUSH_VAPID_PRIVATE_KEY");
 
 type Availability = {
   id?: string;
@@ -39,6 +44,7 @@ type Game = {
   status: "forming" | "confirmed" | "completed";
   requiredPlayers: 4;
   playerIds: string[];
+  createdBy?: string;
   formedFromAvailabilityIds: string[];
   createdAt?: FirebaseFirestore.FieldValue;
   updatedAt?: FirebaseFirestore.FieldValue;
@@ -66,6 +72,62 @@ type WindowRange = {
   start: Date;
   end: Date;
 };
+
+type WebPushSubscription = {
+  id?: string;
+  userId?: string;
+  locationId?: string;
+  endpoint?: string;
+  keys?: {
+    p256dh?: string;
+    auth?: string;
+  };
+  enabled?: boolean;
+};
+
+type UserProfile = {
+  uid?: string;
+  locationId?: string;
+  presence?: "visible" | "offline";
+};
+
+type AppNotification = {
+  id?: string;
+  userId?: string;
+  gameId?: string;
+  type?: "matchPosted" | "playerJoined" | "formingGame" | "gameConfirmed" | "courtAssigned" | "playerLeft";
+  title?: string;
+  body?: string;
+};
+
+type AdminLocationInput = {
+  id?: unknown;
+  name?: unknown;
+  city?: unknown;
+  state?: unknown;
+  country?: unknown;
+  type?: unknown;
+  imageUrl?: unknown;
+  courtCount?: unknown;
+  courtLabels?: unknown;
+  active?: unknown;
+};
+
+export const sendPushForNotification = onDocumentCreated(
+  { document: "notifications/{notificationId}", secrets: [webPushVapidPrivateKey] },
+  async (event) => {
+  const notification = event.data?.data() as AppNotification | undefined;
+  if (!notification?.userId || !notification.title || !notification.body || !shouldSendPush(notification)) return;
+
+  await sendPushToUser(notification.userId, {
+    title: notification.title,
+    body: notification.body,
+    gameId: notification.gameId,
+    notificationId: event.params.notificationId,
+    type: notification.type
+  });
+  }
+);
 
 export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilityId}", async (event) => {
   const availabilityId = event.params.availabilityId;
@@ -131,6 +193,12 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
 
     const formingSnapshot = await transaction.get(formingQuery);
     const confirmedSnapshot = await transaction.get(confirmedQuery);
+    const usersSnapshot = await transaction.get(db.collection("users").where("locationId", "==", availability.locationId));
+    const pushSubscriptionsSnapshot = await transaction.get(
+      db
+        .collection("pushSubscriptions")
+        .where("locationId", "==", availability.locationId)
+    );
     const formingDoc = formingSnapshot.docs.find((doc) => {
       const game = doc.data() as Partial<Game>;
       const gameRange = gameWindow(game);
@@ -142,6 +210,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     const gameRef = formingDoc ? formingDoc.ref : db.collection("games").doc();
     const existing = formingDoc ? (formingDoc.data() as Game) : undefined;
     const existingPlayers = existing?.playerIds ?? [];
+    const isNewGame = !formingDoc;
     const existingWindow = existing ? gameWindow(existing) : undefined;
     const activeGameConflicts = new Map<string, WindowRange[]>();
 
@@ -195,7 +264,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     const meetTime =
       status === "confirmed"
         ? availabilityType === "readyNow"
-          ? new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000).toISOString()
+          ? readyNowMeetTime(matchWindow.end)
           : matchWindow.start.toISOString()
         : undefined;
     const startsAt = meetTime ?? matchWindow.start.toISOString();
@@ -209,6 +278,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       status,
       requiredPlayers: REQUIRED_DOUBLES_PLAYERS,
       playerIds: selection.playerIds,
+      createdBy: existing?.createdBy ?? selection.playerIds[0],
       formedFromAvailabilityIds: unique([...(existing?.formedFromAvailabilityIds ?? []), ...selection.availabilityIds]),
       court: existing?.court ?? null,
       createdAt: existing?.createdAt ?? FieldValue.serverTimestamp(),
@@ -243,6 +313,65 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
         },
         { merge: true }
       );
+    }
+
+    if (isNewGame && status === "forming" && selection.playerIds.length === 1) {
+      const creatorId = selection.playerIds[0];
+      const matchPostedRef = db.collection("notifications").doc(`${gameRef.id}_matchPosted_${creatorId}`);
+      transaction.set(
+        matchPostedRef,
+        {
+          id: matchPostedRef.id,
+          userId: creatorId,
+          gameId: gameRef.id,
+          type: "matchPosted",
+          title: "Your match is posted",
+          body: "We will alert you when players join.",
+          read: false,
+          createdAt: FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+
+      const usersById = new Map(
+        usersSnapshot.docs.map((doc) => {
+          const user = doc.data() as UserProfile;
+          return [user.uid ?? doc.id, user];
+        })
+      );
+      const activePlayerIds = new Set(
+        [...formingSnapshot.docs, ...confirmedSnapshot.docs].flatMap((doc) => {
+          if (doc.id === gameRef.id) return [];
+          return ((doc.data() as Partial<Game>).playerIds ?? []);
+        })
+      );
+      const optedInUserIds = unique(
+        pushSubscriptionsSnapshot.docs
+          .map((doc) => doc.data() as WebPushSubscription)
+          .filter((subscription) => subscription.enabled !== false)
+          .map((subscription) => subscription.userId)
+          .filter((userId): userId is string => typeof userId === "string" && userId.length > 0)
+      );
+
+      for (const userId of optedInUserIds) {
+        const user = usersById.get(userId);
+        if (!user || user.presence === "offline" || userId === creatorId || activePlayerIds.has(userId)) continue;
+        const notificationRef = db.collection("notifications").doc(`${gameRef.id}_matchPosted_beta_${userId}`);
+        transaction.set(
+          notificationRef,
+          {
+            id: notificationRef.id,
+            userId,
+            gameId: gameRef.id,
+            type: "matchPosted",
+            title: "New doubles game posted",
+            body: "A player is looking for a doubles game at Blackhawk.",
+            read: false,
+            createdAt: FieldValue.serverTimestamp()
+          },
+          { merge: true }
+        );
+      }
     }
 
     logger.info("Doubles match updated", {
@@ -426,7 +555,7 @@ export const joinGame = onCall(async (request) => {
     const meetTime =
       status === "confirmed"
         ? game.availabilityType === "readyNow"
-          ? new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000).toISOString()
+          ? readyNowMeetTime(targetWindow.end)
           : game.startsAt
         : game.meetTime;
     const startsAt = status === "confirmed" && meetTime ? meetTime : game.startsAt;
@@ -457,6 +586,25 @@ export const joinGame = onCall(async (request) => {
           type: notificationType,
           title: notificationTitle,
           body: notificationBody,
+          read: false,
+          createdAt: FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+    }
+
+    const creatorId = game.createdBy ?? game.playerIds[0];
+    if (status === "forming" && creatorId && creatorId !== uid && game.playerIds.includes(creatorId)) {
+      const notificationRef = db.collection("notifications").doc(`${gameRef.id}_playerJoined_${creatorId}_${uid}`);
+      transaction.set(
+        notificationRef,
+        {
+          id: notificationRef.id,
+          userId: creatorId,
+          gameId: gameRef.id,
+          type: "playerJoined",
+          title: "Player joined your match",
+          body: `You now have ${playerIds.length}/${game.requiredPlayers} players.`,
           read: false,
           createdAt: FieldValue.serverTimestamp()
         },
@@ -535,7 +683,6 @@ export const leaveGame = onCall(async (request) => {
   }
 
   const gameRef = db.collection("games").doc(gameId);
-  const availabilityRefs = ["readyNow", "laterToday", "tomorrow"].map((type) => db.collection("availability").doc(`${uid}_${type}`));
   await db.runTransaction(async (transaction) => {
     const gameSnapshot = await transaction.get(gameRef);
     if (!gameSnapshot.exists) {
@@ -553,6 +700,7 @@ export const leaveGame = onCall(async (request) => {
 
     const remainingPlayerIds = game.playerIds.filter((playerId) => playerId !== uid);
     const status = remainingPlayerIds.length >= REQUIRED_DOUBLES_PLAYERS ? "confirmed" : "forming";
+    const availabilityRefs = availabilityRefsForLeavingPlayer(game, uid);
 
     availabilityRefs.forEach((availabilityRef) => transaction.delete(availabilityRef));
 
@@ -594,33 +742,34 @@ export const leaveGame = onCall(async (request) => {
 export const resetTestData = onCall(async (request) => {
   assertAdmin(request.auth?.token.email);
 
-  const testUserIds = new Set(["test-player-3", "test-player-4"]);
-  const testUsersSnapshot = await db.collection("users").where("isTestUser", "==", true).get();
-  testUsersSnapshot.docs.forEach((doc) => testUserIds.add(doc.id));
-
   const deleteRefs = new Map<string, FirebaseFirestore.DocumentReference>();
   const addDelete = (ref: FirebaseFirestore.DocumentReference) => deleteRefs.set(ref.path, ref);
-  testUsersSnapshot.docs.forEach((doc) => addDelete(doc.ref));
+  const [gamesSnapshot, availabilitySnapshot, notificationsSnapshot] = await Promise.all([
+    db.collection("games").get(),
+    db.collection("availability").get(),
+    db.collection("notifications").get()
+  ]);
 
-  const availabilitySnapshot = await db.collection("availability").get();
-  availabilitySnapshot.docs.forEach((doc) => {
-    addDelete(doc.ref);
-  });
-
-  const gamesSnapshot = await db.collection("games").get();
-  gamesSnapshot.docs.forEach((doc) => {
-    addDelete(doc.ref);
-  });
-
-  const notificationsSnapshot = await db.collection("notifications").get();
-  notificationsSnapshot.docs.forEach((doc) => {
-    addDelete(doc.ref);
-  });
+  gamesSnapshot.docs.forEach((doc) => addDelete(doc.ref));
+  availabilitySnapshot.docs.forEach((doc) => addDelete(doc.ref));
+  notificationsSnapshot.docs.forEach((doc) => addDelete(doc.ref));
 
   const deletes = [...deleteRefs.values()];
   await deleteInBatches(deletes);
-  logger.info("Admin cleared test activity", { count: deletes.length, admin: request.auth?.token.email });
-  return { deletedCount: deletes.length };
+  logger.info("Admin reset beta activity", {
+    count: deletes.length,
+    games: gamesSnapshot.size,
+    availability: availabilitySnapshot.size,
+    notifications: notificationsSnapshot.size,
+    preserved: ["users", "locations", "locationSuggestions", "pushSubscriptions", "storage"],
+    admin: request.auth?.token.email
+  });
+  return {
+    deletedCount: deletes.length,
+    games: gamesSnapshot.size,
+    availability: availabilitySnapshot.size,
+    notifications: notificationsSnapshot.size
+  };
 });
 
 export const updateLocationCourts = onCall(async (request) => {
@@ -653,8 +802,203 @@ export const updateLocationCourts = onCall(async (request) => {
   return { locationId, courtLabels };
 });
 
+export const getAdminDashboard = onCall(async (request) => {
+  assertAdmin(request.auth?.token.email);
+
+  const [usersSnapshot, gamesSnapshot, locationsSnapshot, suggestionsSnapshot] = await Promise.all([
+    db.collection("users").get(),
+    db.collection("games").get(),
+    db.collection("locations").get(),
+    db.collection("locationSuggestions").where("status", "==", "pending").get()
+  ]);
+
+  const games = gamesSnapshot.docs.map((doc) => doc.data() as Partial<Game>);
+  return {
+    users: usersSnapshot.size,
+    games: gamesSnapshot.size,
+    formingGames: games.filter((game) => game.status === "forming").length,
+    confirmedGames: games.filter((game) => game.status === "confirmed").length,
+    completedGames: games.filter((game) => game.status === "completed").length,
+    locations: locationsSnapshot.size,
+    pendingLocationSuggestions: suggestionsSnapshot.size,
+    locationRows: locationsSnapshot.docs.map((doc) => serializeLocation(doc.id, doc.data()))
+  };
+});
+
+export const listLocationSuggestions = onCall(async (request) => {
+  assertAdmin(request.auth?.token.email);
+
+  const snapshot = await db.collection("locationSuggestions").where("status", "==", "pending").get();
+  return {
+    suggestions: snapshot.docs.map((doc) => serializeSuggestion(doc.id, doc.data()))
+  };
+});
+
+export const approveLocationSuggestion = onCall(async (request) => {
+  const adminEmail = request.auth?.token.email;
+  assertAdmin(adminEmail);
+
+  const suggestionId = typeof request.data?.suggestionId === "string" ? request.data.suggestionId.trim() : "";
+  if (!suggestionId) throw new HttpsError("invalid-argument", "Missing suggestion ID.");
+
+  const input = normalizeLocationInput(request.data?.location ?? {});
+  const locationId = input.id || slugifyLocationId(input.name, input.city);
+  const suggestionRef = db.collection("locationSuggestions").doc(suggestionId);
+  const locationRef = db.collection("locations").doc(locationId);
+
+  await db.runTransaction(async (transaction) => {
+    const suggestionSnapshot = await transaction.get(suggestionRef);
+    if (!suggestionSnapshot.exists) throw new HttpsError("not-found", "Suggestion not found.");
+
+    transaction.set(locationRef, { ...input, id: locationId, active: true, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    transaction.set(
+      suggestionRef,
+      {
+        status: "approved",
+        locationId,
+        approvedAt: FieldValue.serverTimestamp(),
+        approvedBy: adminEmail,
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    );
+  });
+
+  logger.info("Admin approved location suggestion", { suggestionId, locationId, admin: adminEmail });
+  return { suggestionId, locationId };
+});
+
+export const rejectLocationSuggestion = onCall(async (request) => {
+  const adminEmail = request.auth?.token.email;
+  assertAdmin(adminEmail);
+
+  const suggestionId = typeof request.data?.suggestionId === "string" ? request.data.suggestionId.trim() : "";
+  if (!suggestionId) throw new HttpsError("invalid-argument", "Missing suggestion ID.");
+
+  await db.collection("locationSuggestions").doc(suggestionId).set(
+    {
+      status: "rejected",
+      rejectedAt: FieldValue.serverTimestamp(),
+      rejectedBy: adminEmail,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+
+  logger.info("Admin rejected location suggestion", { suggestionId, admin: adminEmail });
+  return { suggestionId };
+});
+
+export const upsertLocation = onCall(async (request) => {
+  const adminEmail = request.auth?.token.email;
+  assertAdmin(adminEmail);
+
+  const input = normalizeLocationInput(request.data?.location ?? {});
+  const locationId = input.id || slugifyLocationId(input.name, input.city);
+
+  await db.collection("locations").doc(locationId).set(
+    {
+      ...input,
+      id: locationId,
+      active: input.active !== false,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+
+  logger.info("Admin upserted location", { locationId, admin: adminEmail });
+  return { locationId };
+});
+
 function unique(values: string[]) {
   return [...new Set(values.filter(Boolean))];
+}
+
+function readAdminString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value.trim() : fallback;
+}
+
+function readAdminStringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean) : [];
+}
+
+function readAdminNumber(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function slugifyLocationId(name: string, city: string) {
+  const slug = `${name}-${city}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  if (!slug) throw new HttpsError("invalid-argument", "Location needs a valid name.");
+  return slug;
+}
+
+function normalizeLocationInput(raw: AdminLocationInput) {
+  const name = readAdminString(raw.name);
+  const city = readAdminString(raw.city);
+  const state = readAdminString(raw.state);
+  const country = readAdminString(raw.country, "USA");
+  const type = readAdminString(raw.type, "club");
+  const imageUrl = readAdminString(raw.imageUrl);
+  const courtLabels = readAdminStringArray(raw.courtLabels);
+  const courtCount = readAdminNumber(raw.courtCount, courtLabels.length);
+
+  if (!name || !city) throw new HttpsError("invalid-argument", "Location name and city are required.");
+  if (!["club", "publicCourt", "resort", "destination"].includes(type)) {
+    throw new HttpsError("invalid-argument", "Invalid location type.");
+  }
+
+  return {
+    id: readAdminString(raw.id),
+    name,
+    city,
+    state,
+    country,
+    type,
+    imageUrl,
+    courtCount,
+    courtLabels: courtLabels.length ? courtLabels : Array.from({ length: Math.max(0, Math.min(courtCount, 40)) }, (_, index) => `Court ${index + 1}`),
+    active: raw.active !== false
+  };
+}
+
+function serializeTimestamp(value: unknown) {
+  if (value && typeof value === "object" && "toDate" in value && typeof value.toDate === "function") {
+    return value.toDate().toISOString();
+  }
+  return typeof value === "string" ? value : "";
+}
+
+function serializeLocation(id: string, data: FirebaseFirestore.DocumentData) {
+  return {
+    id: readAdminString(data.id, id),
+    name: readAdminString(data.name),
+    city: readAdminString(data.city),
+    state: readAdminString(data.state),
+    country: readAdminString(data.country),
+    type: readAdminString(data.type, "club"),
+    imageUrl: readAdminString(data.imageUrl),
+    courtCount: readAdminNumber(data.courtCount, readAdminStringArray(data.courtLabels).length),
+    courtLabels: readAdminStringArray(data.courtLabels),
+    active: data.active !== false
+  };
+}
+
+function serializeSuggestion(id: string, data: FirebaseFirestore.DocumentData) {
+  return {
+    id: readAdminString(data.id, id),
+    userId: readAdminString(data.userId),
+    name: readAdminString(data.name),
+    city: readAdminString(data.city),
+    state: readAdminString(data.state),
+    country: readAdminString(data.country),
+    courtCount: readAdminNumber(data.courtCount, 0),
+    status: readAdminString(data.status, "pending"),
+    createdAt: serializeTimestamp(data.createdAt)
+  };
 }
 
 function isMatchableAvailabilityType(value: unknown): value is "readyNow" | "laterToday" | "tomorrow" {
@@ -677,6 +1021,18 @@ function availabilityLabel(type: string) {
   if (type === "laterToday") return "Later Today";
   if (type === "tomorrow") return "Tomorrow";
   return "Ready Now";
+}
+
+function readyNowMeetTime(latestStart: Date) {
+  const defaultMeetTime = new Date(Date.now() + DEFAULT_MEET_DELAY_MINUTES * 60 * 1000);
+  return (defaultMeetTime < latestStart ? defaultMeetTime : latestStart).toISOString();
+}
+
+function availabilityRefsForLeavingPlayer(game: Game, userId: string) {
+  const userAvailabilityIds = new Set(["readyNow", "laterToday", "tomorrow"].map((type) => `${userId}_${type}`));
+  return unique(game.formedFromAvailabilityIds ?? [])
+    .filter((availabilityId) => userAvailabilityIds.has(availabilityId))
+    .map((availabilityId) => db.collection("availability").doc(availabilityId));
 }
 
 function pairKey(userA: string, userB: string) {
@@ -763,6 +1119,107 @@ function assertAdmin(email: unknown) {
   if (typeof email !== "string" || !ADMIN_EMAILS.has(email)) {
     throw new HttpsError("permission-denied", "Admin access required.");
   }
+}
+
+function shouldSendPush(notification: AppNotification) {
+  if (notification.type === "matchPosted" || notification.type === "playerJoined") return true;
+  if (notification.type === "gameConfirmed" || notification.type === "courtAssigned" || notification.type === "playerLeft") return true;
+  if (notification.type === "formingGame") return notification.body?.toLowerCase().includes("need 1 more") === true;
+  return false;
+}
+
+async function sendPushToUser(
+  userId: string,
+  payload: {
+    title: string;
+    body: string;
+    gameId?: string;
+    notificationId: string;
+    type?: string;
+  }
+) {
+  const subscriptionSnapshot = await db
+    .collection("pushSubscriptions")
+    .where("userId", "==", userId)
+    .where("enabled", "==", true)
+    .get();
+  const subscriptionDocs = subscriptionSnapshot.docs
+    .map((doc) => ({ ref: doc.ref, data: doc.data() as WebPushSubscription }))
+    .filter((record) => Boolean(record.data.endpoint && record.data.keys?.p256dh && record.data.keys?.auth));
+
+  const webPushPayload = JSON.stringify({
+    title: payload.title,
+    body: payload.body,
+    notificationId: payload.notificationId,
+    gameId: payload.gameId ?? "",
+    type: payload.type ?? "",
+    url: "https://paddleup-match-maker.web.app/"
+  });
+
+  let webPushSuccessCount = 0;
+  let webPushFailureCount = 0;
+  const disabledSubscriptions: Promise<FirebaseFirestore.WriteResult>[] = [];
+
+  if (subscriptionDocs.length > 0) {
+    webpush.setVapidDetails(WEB_PUSH_CONTACT, WEB_PUSH_VAPID_PUBLIC_KEY, webPushVapidPrivateKey.value());
+
+    const webPushResponses = await Promise.allSettled(
+      subscriptionDocs.map((record) =>
+        webpush.sendNotification(
+          {
+            endpoint: record.data.endpoint!,
+            keys: {
+              p256dh: record.data.keys!.p256dh!,
+              auth: record.data.keys!.auth!
+            }
+          },
+          webPushPayload,
+          { TTL: 60 * 60, urgency: "high" }
+        )
+      )
+    );
+
+    webPushResponses.forEach((response, index) => {
+      if (response.status === "fulfilled") {
+        webPushSuccessCount += 1;
+        return;
+      }
+
+      webPushFailureCount += 1;
+      const statusCode = response.reason?.statusCode;
+      if (statusCode === 404 || statusCode === 410) {
+        disabledSubscriptions.push(
+          subscriptionDocs[index].ref.set(
+            {
+              enabled: false,
+              disabledAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp()
+            },
+            { merge: true }
+          )
+        );
+      } else {
+        logger.warn("Web Push send failed", {
+          userId,
+          notificationId: payload.notificationId,
+          statusCode,
+          body: response.reason?.body
+        });
+      }
+    });
+  }
+
+  await Promise.all(disabledSubscriptions);
+
+  logger.info("Push send complete", {
+    userId,
+    notificationId: payload.notificationId,
+    webPushSuccessCount,
+    webPushFailureCount,
+    disabledSubscriptions: disabledSubscriptions.length,
+    successCount: webPushSuccessCount,
+    failureCount: webPushFailureCount
+  });
 }
 
 async function deleteInBatches(refs: FirebaseFirestore.DocumentReference[]) {

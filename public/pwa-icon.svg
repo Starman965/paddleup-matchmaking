@@ -1,5 +1,3 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#0f7a3b"/>
-  <circle cx="258" cy="255" r="144" fill="#e7ff72"/>
-  <path d="M170 224c54 22 119 22 173 0M172 288c54-22 117-22 171 0M224 148c-20 62-20 152 0 214M292 148c20 62 20 152 0 214" stroke="#0f7a3b" stroke-width="18" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <image href="/paddleup-logo.png" width="1024" height="1024" preserveAspectRatio="xMidYMid meet"/>
 </svg>

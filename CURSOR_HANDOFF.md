@@ -1,16 +1,20 @@
 # PaddleUp Matchmaking - Developer Handoff
 
-Last updated: May 31, 2026
+Last updated: June 1, 2026
 
 ## Executive Summary
 
 PaddleUp Matchmaking is a mobile-first React/TypeScript/Firebase PWA for real-time pickleball matchmaking.
 
-The MVP is launching around one active location:
+The MVP is now in multi-location beta.
+
+Current seeded/approved locations include:
 
 - `blackhawk` - Blackhawk Country Club
+- `esperanza` - Esperanza Resort
+- Admin-approved user suggestions, such as PIKL Los Angeles
 
-Important architecture decision: do not hard-code Blackhawk into the domain model. Every user, availability record, game, and future matching decision should reference `locationId`. The app has one live location today, but the data model is intentionally location-first so it can later support public courts, resorts, vacation destinations, country clubs, nearby matching, and GPS-based discovery.
+Important architecture decision: do not hard-code Blackhawk into the domain model. Every user, availability record, game, push subscription, and matching decision should reference `locationId`. The app is intentionally location-first so it can support public courts, resorts, vacation destinations, country clubs, nearby matching, and GPS-based discovery later.
 
 The product is not a scheduling app, event system, chat app, ladder app, or open-play manager. The product is an intent-driven matchmaking tool.
 
@@ -42,7 +46,8 @@ Firebase project:
 - Firestore: active
 - Cloud Functions: active
 - Hosting: active
-- Messaging/FCM: not wired into product behavior yet
+- Storage: active
+- Push: standard Web Push for installed PWAs; FCM web push was intentionally removed for iOS reliability
 
 Current branch:
 
@@ -52,8 +57,8 @@ Latest known deployed state:
 
 - Hosting is live.
 - Functions are live.
-- Latest backend-only deploy updated Cloud Functions after commit `56f1240`.
-- Latest known commit: `56f1240 Preserve forming game windows`.
+- Latest deployed state includes multi-location beta, Web Push alerts, location suggestion approval, admin portal, and location photo upload.
+- The git working tree may contain uncommitted product changes; inspect before committing.
 
 ## Product Model
 
@@ -122,9 +127,14 @@ Backend:
 - Firebase Cloud Functions v2
 - Firebase Hosting
 
+Push:
+
+- Standard Web Push via `PushManager` and `web-push`
+- VAPID public key in the Vite env
+- VAPID private key stored as the `WEB_PUSH_VAPID_PRIVATE_KEY` Firebase Functions secret
+
 Future:
 
-- Firebase Cloud Messaging for push notifications
 - Native iOS wrapper or native app only if install/push friction becomes a real MVP blocker
 
 ## Local Development
@@ -179,6 +189,18 @@ Deploy rules:
 FIREBASE_CLI_UPDATE_NOTIFIER=false firebase deploy --only firestore:rules --project paddleup-match-maker
 ```
 
+Deploy storage rules:
+
+```bash
+FIREBASE_CLI_UPDATE_NOTIFIER=false firebase deploy --only storage --project paddleup-match-maker
+```
+
+Deploy app, functions, and storage rules:
+
+```bash
+FIREBASE_CLI_UPDATE_NOTIFIER=false firebase deploy --only hosting,functions,storage --project paddleup-match-maker
+```
+
 Live smoke check:
 
 ```bash
@@ -215,7 +237,10 @@ Firebase:
 
 - Google Sign-In only.
 - On sign-in, the app upserts `users/{uid}`.
-- The user profile includes `uid`, `firstName`, `lastName`, `email`, `photoUrl`, `locationId`, `presence`, and app preferences such as `defaultReadyNowDuration`.
+- The user profile includes `uid`, `firstName`, `lastName`, `email`, `photoUrl`, `locationId`, `homeLocationId`, `presence`, and app preferences such as `defaultReadyNowDuration`.
+- First-time signed-in users without `homeLocationId` see the `Main Play Location` picker.
+- The picker asks: `Pick your home court location.`
+- Users can choose a listed location or choose `Other`. Choosing `Other` saves `homeLocationId: "other"` but does not create/request a location.
 
 ### Home
 
@@ -254,6 +279,18 @@ Future card labeling:
 - User can set default Ready Now duration: `30`, `60`, `90`, or `120` minutes.
 - This preference is stored on `users/{uid}.defaultReadyNowDuration`.
 - Hydration must wait for the live Firestore user record before falling back to local defaults. A prior bug caused the UI to revert to `60` after sign-out/sign-in because local state won the race.
+- User can update `Default Location` in Profile.
+- Profile `Default Location` subtext reads: `Pick your home court location`.
+- The dropdown includes all active locations plus `Other`.
+
+### Locations
+
+- The Locations tab shows the current active location and active locations from Firestore.
+- Switching location changes the active session location, which scopes visible players, availability, games, court options, match creation, and push subscription location metadata.
+- The whole location card is clickable, including the `Switch` / `Current` pill area.
+- Default/main play location is intentionally subtle in this tab; no `Default` text is displayed.
+- Users can suggest a location from the Locations tab using the plus button. Suggestions are written to `locationSuggestions` with `status: "pending"`.
+- Suggestion submit copy tells users new locations are reviewed and added in less than 24 hours.
 
 ### My Games
 
@@ -292,19 +329,56 @@ Product nuance:
 
 - It is acceptable to assign a court before the game is fully confirmed if a real-world court is known, but the most obvious MVP placement is on confirmed or selected game cards where it is actionable.
 
+### Admin Portal
+
+URL:
+
+- `https://paddleup-match-maker.web.app/admin`
+
+Access:
+
+- Google Sign-In.
+- Server-side callable checks restrict admin actions to `demandgendave@gmail.com`.
+- Do not open broad admin reads/writes in Firestore client rules.
+
+Current admin capabilities:
+
+- Dashboard metrics: total users, total games, forming games, confirmed games, completed games, total locations, pending location suggestions.
+- Pending location suggestions list.
+- Approve a suggestion after editing name, city, state, country, type, court count, court labels, active status, and image URL.
+- Reject a suggestion.
+- Create and update locations manually.
+- Toggle active/inactive locations.
+- Upload location photos. Photos are stored at `locationPhotos/{locationId}/cover.webp` and saved to `locations/{locationId}.imageUrl`.
+
+Important UX note:
+
+- The admin route must opt out of the locked mobile PWA page layout so it can scroll normally on desktop/narrow browser windows.
+
 ## Firestore Collections
 
 ### `locations`
 
-Current seeded doc:
+Location docs now support admin-managed metadata:
 
 ```json
 {
   "id": "blackhawk",
   "name": "Blackhawk Country Club",
-  "type": "club"
+  "type": "club",
+  "city": "Danville",
+  "state": "CA",
+  "country": "USA",
+  "imageUrl": "",
+  "subtitle": "",
+  "courtCount": 10,
+  "courtLabels": ["Court 1", "Court 2"],
+  "active": true,
+  "updatedAt": "serverTimestamp"
 }
 ```
+
+Player-facing location lists filter out `active: false`.
 
 ### `users`
 
@@ -316,11 +390,14 @@ Current seeded doc:
   "email": "",
   "photoUrl": "",
   "locationId": "blackhawk",
+  "homeLocationId": "blackhawk",
   "presence": "visible",
   "defaultReadyNowDuration": 60,
   "updatedAt": "serverTimestamp"
 }
 ```
+
+`homeLocationId` may be `"other"` if the user selected Other during onboarding. Keep `locationId` pointed at a real active location for player/game queries.
 
 ### `availability`
 
@@ -408,8 +485,57 @@ Current notification types:
 - `gameConfirmed`
 - `courtAssigned`
 - `playerLeft`
+- `matchPosted`
+- `playerJoined`
 
-Browser/mobile push notifications are not implemented yet. Current notifications are Firestore in-app notifications.
+Browser/mobile push notifications are implemented with standard Web Push for supported installed PWAs. Do not reintroduce FCM web push unless there is a clear cross-platform reason and iOS behavior is retested.
+
+### `pushSubscriptions`
+
+```json
+{
+  "id": "",
+  "userId": "",
+  "locationId": "blackhawk",
+  "endpoint": "",
+  "keys": {
+    "p256dh": "",
+    "auth": ""
+  },
+  "platform": "ios",
+  "browser": "safari",
+  "standalone": true,
+  "enabled": true,
+  "lastSeenAt": "serverTimestamp",
+  "createdAt": "serverTimestamp",
+  "updatedAt": "serverTimestamp"
+}
+```
+
+Important UX rule:
+
+- Only request notification permission from an explicit `Allow Alerts` action.
+- Location switching may refresh push subscription metadata only when `Notification.permission === "granted"`; it must not trigger the browser permission prompt.
+
+### `locationSuggestions`
+
+```json
+{
+  "id": "",
+  "userId": "",
+  "name": "",
+  "city": "",
+  "state": "",
+  "country": "",
+  "courtCount": 0,
+  "status": "pending",
+  "locationId": "",
+  "createdAt": "serverTimestamp",
+  "updatedAt": "serverTimestamp"
+}
+```
+
+Users can create pending suggestions. Admin approves/rejects them through callable functions.
 
 ### `playmates`
 
@@ -528,6 +654,18 @@ Behavior:
 5. Updates `games/{gameId}.court`.
 6. Creates `courtAssigned` notifications for every player in the game.
 
+### Admin callables
+
+All guarded by `assertAdmin(request.auth?.token.email)`:
+
+- `getAdminDashboard`
+- `listLocationSuggestions`
+- `approveLocationSuggestion`
+- `rejectLocationSuggestion`
+- `upsertLocation`
+- Existing admin maintenance helpers include `resetTestData` and `updateLocationCourts`.
+- `resetTestData` is the `/admin` beta cleanup action. It deletes only activity/history data from `games`, `availability`, and generated `notifications`. It intentionally preserves `users`, `locations`, `locationSuggestions`, `pushSubscriptions`/alert opt-in settings, and all Firebase Storage photos.
+
 ### `closeExpiredGames`
 
 Scheduled function.
@@ -575,8 +713,13 @@ Install on iPhone:
 
 Important iOS note:
 
+- Firebase Auth is configured with `authDomain: "paddleup-match-maker.web.app"` so Google sign-in uses the same public app origin that the QR code shares. If sign-in reports an unauthorized domain, verify Firebase Auth authorized domains and Google OAuth redirect URIs include `paddleup-match-maker.web.app` and `https://paddleup-match-maker.web.app/__/auth/handler`.
 - PWA push notifications on iPhone require the user to install the PWA to Home Screen.
-- FCM/push is not implemented yet, so current alerts are in-app only.
+- First Google sign-in should not request notification permission. Users turn on match alerts after launching the installed Home Screen app.
+- The app uses standard Web Push, not FCM web push, because iOS Safari/Home Screen support is the critical MVP path.
+- Web Push private key is a Firebase Functions secret: `WEB_PUSH_VAPID_PRIVATE_KEY`.
+- Web Push public key is exposed to the Vite app via `VITE_FIREBASE_VAPID_KEY`.
+- The service worker handles `push` events directly and opens notification target URLs on click.
 
 Mobile app shell fixes already made:
 
@@ -584,12 +727,13 @@ Mobile app shell fixes already made:
 - Each screen uses internal scrolling.
 - Bottom navigation is intended to stay consistent page-to-page.
 - Safe-area padding is handled in CSS.
+- `/admin` opts out of the fixed body layout so the admin portal can scroll normally.
 
 Continue testing on real iPhone Safari/PWA because desktop browser emulation misses Safari address-bar and bottom-bar behavior.
 
 ## Current Verified State
 
-As of May 31, 2026:
+As of June 1, 2026:
 
 - Firebase Hosting is live.
 - Google sign-in works.
@@ -606,16 +750,27 @@ As of May 31, 2026:
 - Home reads live Firestore games after sign-in.
 - My Games reads live Firestore games after sign-in.
 - Notifications are read live from Firestore and shown in-app.
+- Standard Web Push sends match alerts for supported installed PWAs.
+- Push subscription location metadata is limited to the user's active location.
+- Switching locations no longer triggers the browser notification permission prompt.
+- Multi-location beta is live.
+- New users choose a main play location, including `Other`.
+- Profile lets users update Default Location.
+- Location suggestions can be submitted from the Locations tab.
+- Admin portal is live at `/admin`.
+- Admin can approve/reject suggestions, create/update locations, edit court labels, toggle active state, view metrics, and upload location photos.
+- Location photos are stored in Firebase Storage and rendered from `locations.imageUrl`.
 - Web production build passes.
 - Functions production build passes.
-- Code is pushed to GitHub.
+- Storage rules compile and are deployed.
+- The repo may have uncommitted changes from the latest product iteration; check `git status` before starting new work.
 - Latest Cloud Functions deploy succeeded.
 
 Known test data:
 
 - Several real and temporary test users/games may exist in Firestore.
 - Do not treat current Firestore data as clean production data.
-- Before inviting real users, add an admin cleanup path or manually reset test data.
+- Before inviting real users, use the admin cleanup path or manually reset test data as needed.
 
 ## Recent Enhancements and Fixes
 
@@ -686,12 +841,13 @@ Known test data:
 2. Singles are not implemented in backend.
    - MVP is doubles-first.
 
-3. Push notifications are not implemented.
-   - Current notification system is Firestore/in-app only.
+3. Push notification QA is still platform-sensitive.
+   - iPhone users should use Safari, add PaddleUp to Home Screen, then launch from the icon before enabling alerts.
+   - Do not trigger notification permission prompts from passive actions like location switching.
 
-4. Admin tooling is minimal.
+4. Admin tooling is intentionally minimal.
    - Admin controls are intended for David only.
-   - Need safer cleanup/reset tools before broader testing.
+   - It supports beta operations, not full user management or analytics.
 
 5. Test data may pollute QA.
    - Add a cleanup script or admin-only reset function before inviting real players.
@@ -731,19 +887,20 @@ Also test:
 - A can still create Ready Now today.
 - A cannot create/join another game that overlaps the same time window.
 
-### 2. Add cleanup/admin tools
+### 2. QA multi-location and admin flows
 
-Create a safe admin-only way to:
+Test:
 
-- Delete test availability
-- Delete test notifications
-- Delete test games
-- Optionally delete seeded fake users
-- Reset one location to a clean QA state
+- New user chooses a listed main play location.
+- New user chooses `Other`.
+- Profile Default Location updates correctly.
+- Switching Locations scopes players, availability, games, court choices, match creation, and push subscription metadata.
+- User submits a location suggestion.
+- Admin approves a suggestion after editing metadata, court labels, and optional image.
+- Admin rejects a suggestion.
+- Inactive locations do not appear in the player-facing location list.
 
-Do not expose this to normal users.
-
-### 3. Improve court assignment UI
+### 3. Improve court assignment UI if needed
 
 Add:
 
@@ -790,21 +947,16 @@ These should answer the MVP question:
 
 > Is this better than WhatsApp coordination?
 
-### 7. Add FCM only after in-app flow is solid
+### 7. Continue push notification QA
 
-Implementation direction:
+Validate on real devices:
 
-- Enable Firebase Cloud Messaging.
-- Add VAPID key.
-- Ask permission at a meaningful moment, not first page load.
-- Store push tokens per user/device.
-- Send push for:
-  - game confirmed
-  - court assigned
-  - player left
-  - need replacement
+- iPhone Safari browser.
+- Installed iPhone Home Screen PWA.
+- iPhone Chrome as a non-primary path with Safari guidance.
+- Desktop Chrome for admin/dev sanity checks.
 
-For iPhone PWA, push requires Home Screen installation.
+Push should remain explicit opt-in from Profile. Do not request notification permission during sign-in, first-run location selection, or location switching.
 
 ## Design Direction
 
@@ -860,12 +1012,12 @@ This keeps Firebase Hosting viable. The "server" is Firebase Functions, not a cu
 6. If fewer than 4 players, a forming doubles match appears with the requested play window and needed count.
 7. Another user can either publish matching availability or directly join the displayed match.
 8. When 4 players are in, the backend confirms the game.
-9. Players see in-app notification, and later will receive push notification once FCM is implemented.
+9. Players see in-app notifications and, if alerts are enabled on a supported installed PWA, receive Web Push notifications.
 10. Any player assigns a court.
 11. The game closes automatically after the play window plus grace period.
 
 ## Suggested Cursor Starting Prompt
 
 ```text
-You are taking over PaddleUp Matchmaking, a React/TypeScript/Firebase PWA for pickleball matchmaking. Read CURSOR_HANDOFF.md, README.md, src/domain.ts, src/firebaseDb.ts, src/main.tsx, src/styles.css, firestore.rules, and functions/src/index.ts first. Preserve the architecture: clients express intent, Cloud Functions own game matching/mutations, and all data remains location-first through locationId. The latest product decision is that all Ready Now/Later Today/Tomorrow requests are "Matches Forming"; direct join is allowed; games close after the window plus 15 minutes; and forming game windows must be preserved while later players can join with at least 30 minutes of overlap. Start by QAing the latest deployed behavior, then choose from admin cleanup, court assignment UI, notification read states, or leave-game availability cleanup.
+You are taking over PaddleUp Matchmaking, a React/TypeScript/Firebase PWA for pickleball matchmaking. Read CURSOR_HANDOFF.md, README.md, src/domain.ts, src/firebaseDb.ts, src/main.tsx, src/styles.css, firestore.rules, storage.rules, and functions/src/index.ts first. Preserve the architecture: clients express intent, Cloud Functions own game matching/mutations, and all data remains location-first through locationId. The latest product state includes multi-location beta, first-run Main Play Location selection with an Other option, Profile Default Location, standard Web Push alerts, and an admin portal at /admin for location suggestions, location management, metrics, and location photo upload. Start by QAing the latest deployed behavior, then choose from multi-location QA, push notification QA, court assignment polish, notification read states, or leave-game availability cleanup.
 ```

@@ -4,7 +4,22 @@ export const locations: Location[] = [
   {
     id: "blackhawk",
     name: "Blackhawk Country Club",
-    type: "club"
+    type: "club",
+    city: "Danville",
+    state: "CA",
+    country: "USA",
+    courtCount: 10,
+    courtLabels: Array.from({ length: 10 }, (_, index) => `Court ${index + 1}`)
+  },
+  {
+    id: "esperanza",
+    name: "Esperanza Resort",
+    type: "resort",
+    city: "Cabo San Lucas",
+    state: "Baja California Sur",
+    country: "Mexico",
+    courtCount: 4,
+    courtLabels: Array.from({ length: 4 }, (_, index) => `Court ${index + 1}`)
   }
 ];
 

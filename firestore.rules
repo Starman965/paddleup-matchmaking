@@ -15,6 +15,17 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /locationSuggestions/{suggestionId} {
+      allow read: if signedIn()
+        && resource.data.userId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.city is string
+        && request.resource.data.status == "pending";
+      allow update, delete: if false;
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
       allow create, update: if owns(userId)
@@ -27,6 +38,31 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create, update: if signedIn()
         && request.resource.data.userId == request.auth.uid;
+      allow delete: if signedIn()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    match /pushTokens/{tokenId} {
+      allow read: if signedIn()
+        && resource.data.userId == request.auth.uid;
+      allow create, update: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.provider == "fcm"
+        && request.resource.data.token is string
+        && request.resource.data.locationId is string;
+      allow delete: if signedIn()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    match /pushSubscriptions/{subscriptionId} {
+      allow read: if signedIn()
+        && resource.data.userId == request.auth.uid;
+      allow create, update: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.endpoint is string
+        && request.resource.data.keys.p256dh is string
+        && request.resource.data.keys.auth is string
+        && request.resource.data.locationId is string;
       allow delete: if signedIn()
         && resource.data.userId == request.auth.uid;
     }

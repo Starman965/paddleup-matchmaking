@@ -4,6 +4,12 @@ export type Location = {
   id: string;
   name: string;
   type: LocationType;
+  city?: string;
+  state?: string;
+  country?: string;
+  imageUrl?: string;
+  subtitle?: string;
+  courtCount?: number;
   courtLabels?: string[];
 };
 
@@ -14,6 +20,7 @@ export type User = {
   email: string;
   photoUrl: string;
   locationId: string;
+  homeLocationId?: string;
   presence?: "visible" | "offline";
   defaultReadyNowDuration?: number;
   isTestUser?: boolean;
@@ -22,6 +29,21 @@ export type User = {
 export type Playmate = {
   userId: string;
   playmateId: string;
+  enabled: boolean;
+};
+
+export type WebPushSubscription = {
+  id: string;
+  userId: string;
+  locationId: string;
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  platform: string;
+  browser: string;
+  standalone: boolean;
   enabled: boolean;
 };
 
@@ -66,4 +88,4 @@ export type Notification = {
   createdAt: string;
 };
 
-export type TabKey = "home" | "players" | "games" | "me";
+export type TabKey = "home" | "players" | "locations" | "games" | "me";
