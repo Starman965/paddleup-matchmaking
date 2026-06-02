@@ -109,6 +109,11 @@ Not MVP:
 - Round robins
 - Drills
 
+Future product enhancements:
+
+- Revisit the `Online` label. Current implementation is not true live presence; it reflects a saved `users/{uid}.presence` visibility state (`visible` or `offline`). A user can close the app and still appear online until they manually go offline or sign out. Safer product language may be `Visible Players` or `Available Players`.
+- If true online detection becomes important, add real presence with a heartbeat/`lastSeenAt` timeout or Firebase Realtime Database presence bridge, then count only recently active sessions.
+
 ## Stack
 
 Frontend:

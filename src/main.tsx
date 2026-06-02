@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { onAuthStateChanged, signInWithPopup, signOut, type User as FirebaseUser } from "firebase/auth";
+import { getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect, signOut, type User as FirebaseUser } from "firebase/auth";
 import { QRCodeSVG } from "qrcode.react";
 import {
   Calendar,
@@ -944,6 +944,16 @@ function App() {
   const loadedVersionRef = useRef<string | null>(null);
   const autoUpdateAttemptedRef = useRef(false);
 
+  function completeSignedInUser(user: FirebaseUser, source: "popup" | "redirect" | "session") {
+    setActiveTab("home");
+    return upsertCurrentUser(user, activeLocation.id)
+      .then(() => setUserPresence(user.uid, "visible"))
+      .then(() => {
+        trackEvent("presence_updated", { presence: "visible", locationId: activeLocation.id, source: `sign_in_${source}` });
+        setFirebaseStatus("Signed in. You are visible in Players.");
+      });
+  }
+
   useEffect(() => {
     initializeAnalytics();
     return onAuthStateChanged(auth, (user) => {
@@ -957,6 +967,17 @@ function App() {
         setFirebaseStatus("Sign in to save availability and see live games.");
       }
     });
+  }, []);
+
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (!result?.user) return;
+        return completeSignedInUser(result.user, "redirect");
+      })
+      .catch((error: Error) => {
+        setFirebaseStatus(`Sign-in failed: ${error.message}`);
+      });
   }, []);
 
   useEffect(() => {
@@ -1942,16 +1963,17 @@ function App() {
   }
 
   function signIn() {
+    if (pwaInstallState.platform === "ios") {
+      setFirebaseStatus("Opening Google sign-in...");
+      signInWithRedirect(auth, googleProvider).catch((error: Error) => {
+        setFirebaseStatus(`Sign-in failed: ${error.message}`);
+      });
+      return;
+    }
+
     signInWithPopup(auth, googleProvider)
       .then(({ user }) => {
-        setActiveTab("home");
-        return upsertCurrentUser(user, activeLocation.id)
-          .then(() => setUserPresence(user.uid, "visible"))
-          .then(() => {
-            trackEvent("presence_updated", { presence: "visible", locationId: activeLocation.id, source: "sign_in" });
-            setFirebaseStatus(`Signed in. You are visible in Players.`);
-          })
-          .catch((error: Error) => setFirebaseStatus(`Signed in, but presence update failed: ${error.message}`));
+        return completeSignedInUser(user, "popup").catch((error: Error) => setFirebaseStatus(`Signed in, but presence update failed: ${error.message}`));
       })
       .catch((error: Error) => {
         setFirebaseStatus(`Sign-in failed: ${error.message}`);
