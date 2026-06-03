@@ -268,6 +268,15 @@ function gameTimeLabel(game: Game) {
   return "Ready Now";
 }
 
+function inviteWindowLabel(game: Game) {
+  const window = gameWindow(game);
+  if (!window || game.availabilityType === "readyNow") return "now";
+
+  const day = formatDay(window.start.toISOString());
+  const dayText = day === "Today" ? "today" : day === "Tomorrow" ? "tomorrow" : `on ${day}`;
+  return `${dayText} between ${formatTime(window.start.toISOString())} and ${formatTime(window.end.toISOString())}`;
+}
+
 function gameWindow(game: Game): WindowRange | undefined {
   const start = new Date(game.startsAt || game.meetTime || "");
   if (Number.isNaN(start.getTime())) return undefined;
@@ -1769,9 +1778,10 @@ function App() {
 
   async function shareSelectedGame(game: Game) {
     const inviteUrl = "https://paddleup-match-maker.web.app/";
-    const text = `I am looking for a doubles pickleball game on PaddleUp at ${activeLocation.name}. Join here:`;
+    const gameLocation = liveLocations.find((location) => location.id === game.locationId) || locationById.get(game.locationId) || activeLocation;
+    const text = `I am looking for a doubles pickleball game at ${gameLocation.name} ${inviteWindowLabel(game)}.\n\nJoin me on PaddleUp:`;
     const safariHint = "On iPhone, open the link in Safari.";
-    const fallbackText = `${text} ${inviteUrl}`;
+    const fallbackText = `${text}\n${inviteUrl}`;
 
     try {
       if (navigator.share) {
