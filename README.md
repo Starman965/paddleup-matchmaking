@@ -23,12 +23,18 @@ Open `http://localhost:5173/`.
 npm run build
 ```
 
-The production app is emitted to `dist/`.
+The production app is emitted to `dist/`. Local builds do not bump release metadata.
+
+To prepare a deployable release build with updated `public/version.json` and bundled build metadata:
+
+```bash
+npm run build:release
+```
 
 ## Deploy to Firebase Hosting
 
 ```bash
-npm run build
+npm run build:release
 firebase deploy --only hosting --project paddleup-match-maker
 ```
 

@@ -8,6 +8,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  documentId,
   type DocumentData,
   type QueryDocumentSnapshot,
   type Unsubscribe
@@ -43,6 +44,27 @@ export type AdminDashboard = {
   locations: number;
   pendingLocationSuggestions: number;
   locationRows: AdminLocation[];
+  userRows: AdminUserDeviceHealth[];
+};
+
+export type AdminUserDeviceHealth = {
+  uid: string;
+  name: string;
+  email: string;
+  locationId: string;
+  homeLocationId?: string;
+  presence?: "visible" | "offline";
+  lastSeenBuild?: string;
+  lastSeenVersion?: string;
+  lastSeenCommit?: string;
+  lastSeenAt?: string;
+  lastSeenPlatform?: string;
+  lastSeenBrowser?: string;
+  lastSeenStandalone?: boolean;
+  lastSeenNotificationPermission?: NotificationPermission | "unsupported";
+  enabledPushSubscriptions: number;
+  hasEnabledPush: boolean;
+  hasStandalonePush: boolean;
 };
 
 export type AdminResetResult = {
@@ -50,6 +72,12 @@ export type AdminResetResult = {
   games: number;
   availability: number;
   notifications: number;
+};
+
+export type AdminTestPushResult = {
+  webPushSuccessCount: number;
+  webPushFailureCount: number;
+  disabledSubscriptions: number;
 };
 
 function timestampToIso(value: unknown) {
@@ -96,7 +124,21 @@ function userFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): User {
     homeLocationId: readString(data.homeLocationId),
     presence: data.presence === "offline" ? "offline" : "visible",
     defaultReadyNowDuration: readNumber(data.defaultReadyNowDuration, 60),
-    isTestUser: data.isTestUser === true
+    isTestUser: data.isTestUser === true,
+    lastSeenBuild: readString(data.lastSeenBuild),
+    lastSeenVersion: readString(data.lastSeenVersion),
+    lastSeenCommit: readString(data.lastSeenCommit),
+    lastSeenAt: optionalTimestampToIso(data.lastSeenAt),
+    lastSeenPlatform: readString(data.lastSeenPlatform),
+    lastSeenBrowser: readString(data.lastSeenBrowser),
+    lastSeenStandalone: data.lastSeenStandalone === true,
+    lastSeenNotificationPermission:
+      data.lastSeenNotificationPermission === "granted" ||
+      data.lastSeenNotificationPermission === "denied" ||
+      data.lastSeenNotificationPermission === "default" ||
+      data.lastSeenNotificationPermission === "unsupported"
+        ? data.lastSeenNotificationPermission
+        : undefined
   };
 }
 
@@ -209,6 +251,38 @@ export async function upsertCurrentUser(firebaseUser: FirebaseUser, locationId: 
   );
 }
 
+export async function updateUserDeviceHealth({
+  userId,
+  build,
+  version,
+  commit,
+  platform,
+  browser,
+  standalone,
+  notificationPermission
+}: {
+  userId: string;
+  build: string;
+  version: string;
+  commit?: string;
+  platform: string;
+  browser: string;
+  standalone: boolean;
+  notificationPermission: NotificationPermission | "unsupported";
+}) {
+  await updateDoc(doc(db, "users", userId), {
+    lastSeenBuild: build,
+    lastSeenVersion: version,
+    lastSeenCommit: commit || "",
+    lastSeenPlatform: platform,
+    lastSeenBrowser: browser,
+    lastSeenStandalone: standalone,
+    lastSeenNotificationPermission: notificationPermission,
+    lastSeenAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+}
+
 export async function setUserHomeLocation(userId: string, locationId: string) {
   await updateDoc(doc(db, "users", userId), {
     homeLocationId: locationId,
@@ -220,6 +294,13 @@ export async function setUserHomeLocation(userId: string, locationId: string) {
 export async function setUserHomeLocationPreference(userId: string, locationId: string) {
   await updateDoc(doc(db, "users", userId), {
     homeLocationId: locationId,
+    updatedAt: serverTimestamp()
+  });
+}
+
+export async function setUserActiveLocation(userId: string, locationId: string) {
+  await updateDoc(doc(db, "users", userId), {
+    locationId,
     updatedAt: serverTimestamp()
   });
 }
@@ -347,6 +428,30 @@ export function subscribeUser(userId: string, onUser: (user: User | undefined) =
   }, onError);
 }
 
+export function subscribeUsersByIds(userIds: string[], onUsers: (users: User[]) => void, onError: (error: Error) => void): Unsubscribe {
+  const uniqueUserIds = [...new Set(userIds.filter(Boolean))];
+  if (uniqueUserIds.length === 0) {
+    onUsers([]);
+    return () => undefined;
+  }
+
+  const usersById = new Map<string, User>();
+  const chunks = Array.from({ length: Math.ceil(uniqueUserIds.length / 10) }, (_, index) => uniqueUserIds.slice(index * 10, index * 10 + 10));
+  const unsubscribes = chunks.map((chunk) =>
+    onSnapshot(
+      query(collection(db, "users"), where(documentId(), "in", chunk)),
+      (snapshot) => {
+        chunk.forEach((userId) => usersById.delete(userId));
+        snapshot.docs.map(userFromSnapshot).forEach((user) => usersById.set(user.uid, user));
+        onUsers(Array.from(usersById.values()));
+      },
+      onError
+    )
+  );
+
+  return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+}
+
 export function subscribeLocations(onLocations: (locations: Location[]) => void, onError: (error: Error) => void): Unsubscribe {
   return onSnapshot(
     collection(db, "locations"),
@@ -453,8 +558,10 @@ export async function saveWebPushSubscription({
 
   const endpointHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
   const subscriptionId = Array.from(new Uint8Array(endpointHash)).map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 32);
+  const subscriptionRef = doc(db, "pushSubscriptions", subscriptionId);
+  const existingSubscription = await getDoc(subscriptionRef);
   await setDoc(
-    doc(db, "pushSubscriptions", subscriptionId),
+    subscriptionRef,
     {
       id: subscriptionId,
       userId,
@@ -467,7 +574,7 @@ export async function saveWebPushSubscription({
       enabled: true,
       lastSeenAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdAt: serverTimestamp()
+      ...(!existingSubscription.exists() ? { createdAt: serverTimestamp() } : {})
     },
     { merge: true }
   );
@@ -499,6 +606,12 @@ export async function leaveGame(gameId: string) {
 
 export async function resetTestData() {
   const callable = httpsCallable<Record<string, never>, AdminResetResult>(functions, "resetTestData");
+  const result = await callable({});
+  return result.data;
+}
+
+export async function sendTestPushToMe() {
+  const callable = httpsCallable<Record<string, never>, AdminTestPushResult>(functions, "sendTestPushToMe");
   const result = await callable({});
   return result.data;
 }

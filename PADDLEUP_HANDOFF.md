@@ -58,7 +58,7 @@ Latest known deployed state:
 - Hosting is live.
 - Functions are live.
 - Latest deployed state includes multi-location beta, Web Push alerts, location suggestion approval, admin portal, and location photo upload.
-- The git working tree may contain uncommitted product changes; inspect before committing.
+- The app compares bundled build metadata from `src/buildMetadata.ts` against remote `/version.json` so installed PWAs can detect stale code.
 
 ## Product Model
 
@@ -160,6 +160,12 @@ Build web app:
 
 ```bash
 npm run build
+```
+
+Create release build metadata and build web app:
+
+```bash
+npm run build:release
 ```
 
 Build functions:
@@ -287,11 +293,12 @@ Future card labeling:
 - User can update `Default Location` in Profile.
 - Profile `Default Location` subtext reads: `Pick your home court location`.
 - The dropdown includes all active locations plus `Other`.
+- `homeLocationId` is the user's saved/default play location. `locationId` is the currently selected active location and drives location-scoped players, games, availability, and notification audience.
 
 ### Locations
 
 - The Locations tab shows the current active location and active locations from Firestore.
-- Switching location changes the active session location, which scopes visible players, availability, games, court options, match creation, and push subscription location metadata.
+- Switching location changes and persists the active `users/{uid}.locationId`, which scopes visible players, availability, games, court options, match creation, notification audience, and push subscription location metadata.
 - The whole location card is clickable, including the `Switch` / `Current` pill area.
 - Default/main play location is intentionally subtle in this tab; no `Default` text is displayed.
 - Users can suggest a location from the Locations tab using the plus button. Suggestions are written to `locationSuggestions` with `status: "pending"`.
@@ -320,6 +327,8 @@ Future card labeling:
 ### Drop Out
 
 - Dropping out removes the user from the game.
+- Dropping out also cancels that player's source availability for the match window. If they still want to play, they should tap `Find Me Playmates` again.
+- If the last player leaves, the backend deletes the empty match.
 - The UI should update immediately by clearing the selected game and deriving visible games from live `myGames`.
 - If the drop causes a confirmed game to fall below capacity, backend behavior should keep the game consistent and notify remaining players.
 
@@ -398,6 +407,14 @@ Player-facing location lists filter out `active: false`.
   "homeLocationId": "blackhawk",
   "presence": "visible",
   "defaultReadyNowDuration": 60,
+  "lastSeenBuild": "56",
+  "lastSeenVersion": "2026-06-03T14:46:11.022Z",
+  "lastSeenCommit": "b1b5785",
+  "lastSeenPlatform": "ios",
+  "lastSeenBrowser": "safari",
+  "lastSeenStandalone": true,
+  "lastSeenNotificationPermission": "granted",
+  "lastSeenAt": "serverTimestamp",
   "updatedAt": "serverTimestamp"
 }
 ```
@@ -492,8 +509,11 @@ Current notification types:
 - `playerLeft`
 - `matchPosted`
 - `playerJoined`
+- `testPush`
 
 Browser/mobile push notifications are implemented with standard Web Push for supported installed PWAs. Do not reintroduce FCM web push unless there is a clear cross-platform reason and iOS behavior is retested.
+
+Profile alert status is per-device. A user can have alerts enabled on another browser/device while the current device still needs its own Home Screen install and push subscription.
 
 ### `pushSubscriptions`
 
@@ -521,6 +541,8 @@ Important UX rule:
 
 - Only request notification permission from an explicit `Allow Alerts` action.
 - Location switching may refresh push subscription metadata only when `Notification.permission === "granted"`; it must not trigger the browser permission prompt.
+- Product expectation: users enable alerts once, and alerts follow their currently selected app location. Users should not manually subscribe per location.
+- Future tightening if needed: include the game/location context in push delivery and filter `pushSubscriptions` by matching `locationId` in `sendPushForNotification`/`sendPushToUser`. Current notification audience creation is location-scoped, but push delivery can still send to every enabled subscription for that user if they have old subscriptions from other devices/location states.
 
 ### `locationSuggestions`
 
@@ -639,12 +661,10 @@ Callable HTTPS function.
 Behavior:
 
 - Removes caller from the game.
-- Keeps game state consistent.
+- Deletes that caller's matching source availability doc for the game window.
+- Deletes the game if no players remain.
+- Keeps remaining game state consistent.
 - Creates relevant notifications.
-
-Known caveat:
-
-- Review whether it deletes all availability docs for the leaving user. That may conflict with future multi-window behavior where a player leaves one future match but still wants another separate time window active.
 
 ### `assignCourt`
 
@@ -670,6 +690,8 @@ All guarded by `assertAdmin(request.auth?.token.email)`:
 - `upsertLocation`
 - Existing admin maintenance helpers include `resetTestData` and `updateLocationCourts`.
 - `resetTestData` is the `/admin` beta cleanup action. It deletes only activity/history data from `games`, `availability`, and generated `notifications`. It intentionally preserves `users`, `locations`, `locationSuggestions`, `pushSubscriptions`/alert opt-in settings, and all Firebase Storage photos.
+- `sendTestPushToMe` is the `/admin` push verification action. It sends a test Web Push to the signed-in admin account using the deployed VAPID keypair and returns success/failure counts.
+- `getAdminDashboard` includes user device-health rows combining `users/{uid}` last-seen build/device fields with enabled `pushSubscriptions` counts. Use this during beta to spot users on stale builds, browser tabs instead of Home Screen PWAs, denied notification permission, or missing alert subscriptions.
 
 ### `closeExpiredGames`
 
@@ -925,15 +947,7 @@ Implement:
 
 Rules already allow users to update only `read` on their own notifications.
 
-### 5. Audit leave-game availability cleanup
-
-If a user can have multiple non-overlapping intentions, leaving one game should not necessarily delete all availability docs. Audit `leaveGame` against these use cases:
-
-- User leaves tomorrow match but still wants Ready Now today.
-- User leaves Ready Now but still wants a tomorrow match.
-- User leaves one future game and should remain eligible for a different non-overlapping window.
-
-### 6. Add product analytics
+### 5. Add product analytics
 
 Track:
 
@@ -1013,7 +1027,7 @@ This keeps Firebase Hosting viable. The "server" is Firebase Functions, not a cu
 2. User taps `Find Me Playmates`.
 3. User chooses Ready Now for 60 minutes, or chooses a later/tomorrow play window.
 4. App writes availability to Firestore.
-5. Cloud Function checks compatible players at Blackhawk.
+5. Cloud Function checks compatible players at the active location.
 6. If fewer than 4 players, a forming doubles match appears with the requested play window and needed count.
 7. Another user can either publish matching availability or directly join the displayed match.
 8. When 4 players are in, the backend confirms the game.

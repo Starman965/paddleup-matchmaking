@@ -124,6 +124,58 @@ html.admin-page body {
   opacity: 0.6;
 }
 
+.admin-menu {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0 auto 20px;
+  max-width: 1120px;
+  padding: 10px;
+  border: 1px solid rgba(23, 35, 29, 0.1);
+  border-radius: 24px;
+  background: rgba(246, 247, 242, 0.88);
+  box-shadow: 0 14px 36px rgba(23, 35, 29, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.admin-menu button {
+  display: grid;
+  gap: 4px;
+  min-height: 64px;
+  padding: 12px;
+  border-radius: 18px;
+  color: #526059;
+  background: rgba(255, 255, 255, 0.72);
+  text-align: left;
+  box-shadow: inset 0 0 0 1px rgba(23, 35, 29, 0.08);
+}
+
+.admin-menu button.active {
+  color: #17231d;
+  background: rgba(35, 134, 94, 0.12);
+  box-shadow: inset 0 0 0 2px rgba(35, 134, 94, 0.32);
+}
+
+.admin-menu strong {
+  font-size: 0.95rem;
+}
+
+.admin-menu span {
+  overflow: hidden;
+  font-size: 0.74rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-section {
+  margin: 0 auto;
+  max-width: 1120px;
+}
+
 .admin-grid,
 .admin-panel {
   margin: 0 auto 20px;
@@ -151,6 +203,59 @@ html.admin-page body {
   padding: 22px;
 }
 
+.admin-collapsible {
+  overflow: hidden;
+}
+
+.admin-collapsible-header {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.admin-panel .admin-collapsible-toggle {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  box-shadow: none;
+}
+
+.admin-collapsible-toggle span {
+  color: #23865e;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.admin-collapsible-toggle strong {
+  color: #17231d;
+  font-size: 1.35rem;
+}
+
+.admin-collapsible-toggle em {
+  color: #526059;
+  font-size: 0.92rem;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.admin-collapsible-action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.admin-collapsible-body {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
 .admin-section-title,
 .admin-card-heading,
 .admin-actions {
@@ -175,10 +280,48 @@ html.admin-page body {
   gap: 14px;
 }
 
+.admin-user-health-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
 .admin-card {
   display: grid;
   gap: 14px;
   padding: 18px;
+}
+
+.admin-health-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.admin-health-grid span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(35, 134, 94, 0.08);
+}
+
+.admin-health-grid strong {
+  overflow: hidden;
+  color: #17231d;
+  font-size: 0.92rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-health-grid em {
+  color: #667268;
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .admin-location-photo {
@@ -337,6 +480,7 @@ html.admin-page body {
   }
 
   .admin-header,
+  .admin-collapsible-header,
   .admin-section-title,
   .admin-card-heading,
   .admin-actions {
@@ -344,7 +488,20 @@ html.admin-page body {
     flex-direction: column;
   }
 
+  .admin-menu {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-menu button {
+    min-height: 58px;
+  }
+
   .admin-form {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-health-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1030,6 +1187,10 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-weight: 750;
   line-height: 1.35;
 }
+.forming-player-summary {
+  margin-top: 7px;
+  text-align: left;
+}
 .game-location-line {
   display: inline-flex;
   align-items: center;
@@ -1599,8 +1760,23 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   background: rgba(255,255,255,0.08);
   box-shadow: inset 0 0 0 1px var(--pkl-line);
 }
+.install-guide-backdrop {
+  position: fixed;
+  z-index: 20;
+  align-items: flex-start;
+  padding: calc(84px + env(safe-area-inset-top, 0px)) 14px calc(20px + env(safe-area-inset-bottom, 0px));
+}
+.install-guide {
+  max-height: calc(100vh - 124px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .install-guide p {
   margin: 10px 2px 0;
+  color: var(--pkl-muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.4;
 }
 .install-guide-steps {
   display: grid;
@@ -1609,16 +1785,16 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
 }
 .install-guide-steps article {
   display: grid;
-  grid-template-columns: 32px 1fr;
-  align-items: center;
+  grid-template-columns: 32px 38px 1fr;
+  align-items: start;
   gap: 10px;
-  min-height: 48px;
+  min-height: 58px;
   padding: 9px 10px;
   border-radius: 16px;
   background: rgba(255,255,255,0.07);
   box-shadow: inset 0 0 0 1px var(--pkl-line);
 }
-.install-guide-steps span {
+.install-step-number {
   display: grid;
   place-items: center;
   width: 32px;
@@ -1629,9 +1805,42 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   font-size: 13px;
   font-weight: 950;
 }
+.install-step-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 13px;
+  color: var(--pkl-yellow);
+  background: rgba(255, 216, 61, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(255, 216, 61, 0.24);
+}
+.install-step-icon svg {
+  width: 23px;
+  height: 23px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.install-step-icon circle {
+  fill: currentColor;
+  stroke: none;
+}
 .install-guide-steps strong {
+  display: block;
+  margin-top: 1px;
   color: var(--pkl-text);
   font-size: 13px;
+}
+.install-guide-steps small {
+  display: block;
+  margin-top: 4px;
+  color: var(--pkl-muted);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.35;
 }
 .update-panel {
   display: grid;

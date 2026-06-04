@@ -24,6 +24,14 @@ export type User = {
   presence?: "visible" | "offline";
   defaultReadyNowDuration?: number;
   isTestUser?: boolean;
+  lastSeenBuild?: string;
+  lastSeenVersion?: string;
+  lastSeenCommit?: string;
+  lastSeenAt?: string;
+  lastSeenPlatform?: string;
+  lastSeenBrowser?: string;
+  lastSeenStandalone?: boolean;
+  lastSeenNotificationPermission?: NotificationPermission | "unsupported";
 };
 
 export type Playmate = {
@@ -81,7 +89,7 @@ export type Notification = {
   id: string;
   userId: string;
   gameId: string;
-  type: "formingGame" | "gameConfirmed" | "courtAssigned" | "playerLeft";
+  type: "matchPosted" | "playerJoined" | "formingGame" | "gameConfirmed" | "courtAssigned" | "playerLeft" | "testPush";
   title: string;
   body: string;
   read: boolean;

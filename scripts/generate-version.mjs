@@ -22,3 +22,7 @@ const metadata = {
 
 writeFileSync(buildNumberPath, `${nextBuild}\n`);
 writeFileSync("public/version.json", `${JSON.stringify(metadata, null, 2)}\n`);
+writeFileSync(
+  "src/buildMetadata.ts",
+  `export const buildMetadata = ${JSON.stringify(metadata, null, 2)} as const;\n`
+);

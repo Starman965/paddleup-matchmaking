@@ -16,6 +16,7 @@ import {
 import { currentUserId, games as seedGames, locations, playmates as seedPlaymates, users as seedUsers } from "./data";
 import type { Availability, AvailabilityType, Game, Location, Playmate, TabKey, User, WebPushSubscription } from "./domain";
 import { auth, googleProvider, initializeAnalytics, trackEvent } from "./firebase";
+import { buildMetadata } from "./buildMetadata";
 import {
   approveLocationSuggestion,
   assignGameCourt,
@@ -28,8 +29,10 @@ import {
   resetTestData,
   saveAvailabilityWindow,
   saveWebPushSubscription,
+  sendTestPushToMe,
   setDefaultReadyNowDuration,
   setPlaymateEnabled,
+  setUserActiveLocation,
   setUserHomeLocation,
   setUserHomeLocationPreference,
   setUserPresence,
@@ -42,17 +45,20 @@ import {
   subscribeUserGames,
   subscribeUserPlaymates,
   subscribeUserWebPushSubscriptions,
+  subscribeUsersByIds,
   updateGameStartTime,
+  updateUserDeviceHealth,
   upsertLocation,
   uploadLocationPhoto,
   uploadProfilePhoto,
   upsertCurrentUser,
   type AdminDashboard,
   type AdminLocation,
-  type AdminLocationSuggestion
+  type AdminLocationSuggestion,
+  type AdminUserDeviceHealth
 } from "./firebaseDb";
 import { getPwaInstallState, type PwaInstallState } from "./pwa";
-import { hasPushVapidKey, requestWebPushSubscription } from "./pushNotifications";
+import { getExistingWebPushSubscription, hasPushVapidKey, pushSubscriptionEndpoint, requestWebPushSubscription } from "./pushNotifications";
 import "./styles.css";
 
 const locationById = new Map(locations.map((location) => [location.id, location]));
@@ -63,12 +69,7 @@ const gameCloseGraceMinutes = 15;
 const startTimeEditGraceMinutes = 15;
 const readyNowDurations = [30, 60, 90, 120];
 const timeRoundingMinutes = 15;
-const defaultBuildMetadata: BuildMetadata = {
-  appVersion: "1.0",
-  build: "1",
-  version: "local",
-  commit: "local"
-};
+const defaultBuildMetadata: BuildMetadata = buildMetadata;
 const versionCheckIntervalMs = 10 * 60 * 1000;
 
 type MatchFeedback = {
@@ -107,7 +108,7 @@ type AppUpdateState = {
   error?: string;
 };
 
-type AlertPermissionState = "unsupported" | "needsInstall" | "setupNeeded" | "off" | "allowedNoToken" | "on" | "blocked";
+type AlertPermissionState = "unsupported" | "needsInstall" | "setupNeeded" | "off" | "allowedNoToken" | "on" | "onOtherDevice" | "blocked";
 
 type WindowRange = {
   start: Date;
@@ -129,6 +130,18 @@ function formatBuildStamp(value?: string, commit?: string) {
     minute: "2-digit"
   }).format(date);
   return commit ? `Updated ${formatted} · ${commit}` : `Updated ${formatted}`;
+}
+
+function formatAdminLastSeen(value?: string) {
+  if (!value) return "Not seen yet";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
 }
 
 function formatDay(value: string) {
@@ -381,7 +394,7 @@ function initials(user: User) {
 
 function shortPlayerName(user: User) {
   const firstName = user.firstName || user.email.split("@")[0] || "Player";
-  const lastInitial = user.lastName?.[0] ? ` ${user.lastName[0]}.` : "";
+  const lastInitial = user.lastName?.[0] ? ` ${user.lastName[0]}` : "";
   return `${firstName}${lastInitial}`;
 }
 
@@ -443,6 +456,13 @@ async function cropImageToWebp(src: string, zoom: number) {
 }
 
 const adminEmail = "demandgendave@gmail.com";
+type AdminSectionKey = "overview" | "users" | "locations" | "operations";
+const adminSections: Array<{ key: AdminSectionKey; label: string; description: string }> = [
+  { key: "overview", label: "Overview", description: "Metrics and admin status" },
+  { key: "users", label: "Users", description: "Builds, PWAs, and alerts" },
+  { key: "locations", label: "Locations", description: "Suggestions and court data" },
+  { key: "operations", label: "Operations", description: "Push tests and cleanup" }
+];
 
 function blankAdminLocation(): AdminLocation {
   return {
@@ -483,6 +503,7 @@ function AdminApp() {
   const [adminStatus, setAdminStatus] = useState("Sign in to manage PaddleUp.");
   const [loading, setLoading] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState("");
+  const [activeSection, setActiveSection] = useState<AdminSectionKey>("overview");
 
   useEffect(() => {
     document.documentElement.classList.add("admin-page");
@@ -583,6 +604,20 @@ function AdminApp() {
     }
   }
 
+  async function sendAdminTestPush() {
+    setLoading(true);
+    try {
+      const result = await sendTestPushToMe();
+      setAdminStatus(
+        `Test push sent. Success: ${result.webPushSuccessCount}. Failed: ${result.webPushFailureCount}. Disabled stale subscriptions: ${result.disabledSubscriptions}.`
+      );
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? `Test push failed: ${error.message}` : "Test push failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   if (!authReady) return <main className="admin-shell"><p>Loading admin...</p></main>;
 
   return (
@@ -616,74 +651,182 @@ function AdminApp() {
 
       {isAdmin && (
         <>
-          <section className="admin-grid">
-            <AdminMetric label="Users" value={dashboard?.users ?? 0} />
-            <AdminMetric label="Games" value={dashboard?.games ?? 0} />
-            <AdminMetric label="Forming" value={dashboard?.formingGames ?? 0} />
-            <AdminMetric label="Confirmed" value={dashboard?.confirmedGames ?? 0} />
-            <AdminMetric label="Completed" value={dashboard?.completedGames ?? 0} />
-            <AdminMetric label="Locations" value={dashboard?.locations ?? 0} />
-            <AdminMetric label="Pending Suggestions" value={dashboard?.pendingLocationSuggestions ?? 0} />
-          </section>
+          <AdminMenu activeSection={activeSection} onSelect={setActiveSection} />
 
-          <section className="admin-panel">
-            <div className="admin-section-title">
-              <h2>Location Suggestions</h2>
-              <button disabled={loading} onClick={() => void loadAdminData()}>Refresh</button>
-            </div>
-            {suggestions.length === 0 && <p>No pending suggestions.</p>}
-            <div className="admin-stack">
-              {suggestions.map((suggestion) => (
-                <AdminSuggestionCard
-                  key={suggestion.id}
-                  suggestion={suggestion}
-                  disabled={loading}
-                  onApprove={approveSuggestion}
-                  onReject={rejectSuggestion}
-                />
-              ))}
-            </div>
-          </section>
+          {activeSection === "overview" && (
+            <section className="admin-section">
+              <div className="admin-grid">
+                <AdminMetric label="Users" value={dashboard?.users ?? 0} />
+                <AdminMetric label="Games" value={dashboard?.games ?? 0} />
+                <AdminMetric label="Forming" value={dashboard?.formingGames ?? 0} />
+                <AdminMetric label="Confirmed" value={dashboard?.confirmedGames ?? 0} />
+                <AdminMetric label="Completed" value={dashboard?.completedGames ?? 0} />
+                <AdminMetric label="Locations" value={dashboard?.locations ?? 0} />
+                <AdminMetric label="Pending Suggestions" value={dashboard?.pendingLocationSuggestions ?? 0} />
+              </div>
+              <section className="admin-panel">
+                <div className="admin-section-title">
+                  <div>
+                    <h2>Dashboard Status</h2>
+                    <p>{adminStatus}</p>
+                  </div>
+                  <button disabled={loading} onClick={() => void loadAdminData()}>{loading ? "Refreshing..." : "Refresh"}</button>
+                </div>
+              </section>
+            </section>
+          )}
 
-          <section className="admin-panel admin-danger-panel">
-            <h2>Beta Data Reset</h2>
-            <p>
-              Clears only beta activity: games, availability, and generated notification history. Users, locations, uploaded photos,
-              location suggestions, and notification opt-in settings stay intact.
-            </p>
-            <label className="admin-confirm-field">
-              <span>Type RESET BETA DATA to confirm</span>
-              <input
-                value={resetConfirmText}
-                onChange={(event) => setResetConfirmText(event.target.value)}
-                placeholder="RESET BETA DATA"
-              />
-            </label>
-            <button
-              className="admin-danger"
-              disabled={loading || resetConfirmText !== "RESET BETA DATA"}
-              onClick={() => void resetBetaData()}
-            >
-              Reset Beta Data
-            </button>
-          </section>
+          {activeSection === "users" && (
+            <section className="admin-section">
+              <AdminCollapsiblePanel
+                title="User Device Health"
+                description="Latest app build, Home Screen/PWA status, notification permission, and enabled alert subscriptions for signed-in users."
+                defaultOpen
+                action={<button disabled={loading} onClick={() => void loadAdminData()}>Refresh</button>}
+              >
+                <div className="admin-user-health-list">
+                  {(dashboard?.userRows ?? []).map((user) => (
+                    <AdminUserHealthCard key={user.uid} user={user} />
+                  ))}
+                  {(dashboard?.userRows ?? []).length === 0 && <p>No users yet.</p>}
+                </div>
+              </AdminCollapsiblePanel>
+            </section>
+          )}
 
-          <section className="admin-panel">
-            <h2>Create Location</h2>
-            <AdminLocationForm initialLocation={blankAdminLocation()} submitLabel="Create Location" disabled={loading} onSubmit={saveLocation} />
-          </section>
+          {activeSection === "locations" && (
+            <section className="admin-section">
+              <AdminCollapsiblePanel
+                title="Location Suggestions"
+                description="Review user-submitted locations, edit details, upload a photo, then approve or reject."
+                defaultOpen={suggestions.length > 0}
+                action={<button disabled={loading} onClick={() => void loadAdminData()}>Refresh</button>}
+              >
+                {suggestions.length === 0 && <p>No pending suggestions.</p>}
+                <div className="admin-stack">
+                  {suggestions.map((suggestion) => (
+                    <AdminSuggestionCard
+                      key={suggestion.id}
+                      suggestion={suggestion}
+                      disabled={loading}
+                      onApprove={approveSuggestion}
+                      onReject={rejectSuggestion}
+                    />
+                  ))}
+                </div>
+              </AdminCollapsiblePanel>
 
-          <section className="admin-panel">
-            <h2>Manage Locations</h2>
-            <div className="admin-stack">
-              {(dashboard?.locationRows ?? []).map((location) => (
-                <AdminLocationForm key={location.id} initialLocation={location} submitLabel="Save Location" disabled={loading} onSubmit={saveLocation} />
-              ))}
-            </div>
-          </section>
+              <AdminCollapsiblePanel title="Create Location" description="Add a new beta location manually." defaultOpen={false}>
+                <AdminLocationForm initialLocation={blankAdminLocation()} submitLabel="Create Location" disabled={loading} onSubmit={saveLocation} />
+              </AdminCollapsiblePanel>
+
+              <AdminCollapsiblePanel title="Manage Locations" description="Edit active locations, photos, court counts, court labels, and active status." defaultOpen={false}>
+                <div className="admin-stack">
+                  {(dashboard?.locationRows ?? []).map((location) => (
+                    <AdminLocationForm key={location.id} initialLocation={location} submitLabel="Save Location" disabled={loading} onSubmit={saveLocation} />
+                  ))}
+                </div>
+              </AdminCollapsiblePanel>
+            </section>
+          )}
+
+          {activeSection === "operations" && (
+            <section className="admin-section">
+              <AdminCollapsiblePanel title="Push Verification" description="Send a test push to your signed-in admin account to verify VAPID and enabled subscriptions." defaultOpen>
+                <button disabled={loading} onClick={() => void sendAdminTestPush()}>Send Test Push To Me</button>
+              </AdminCollapsiblePanel>
+
+              <AdminCollapsiblePanel title="Beta Data Reset" description="Clears beta activity while preserving users, locations, photos, suggestions, and alert settings." defaultOpen={false} tone="danger">
+                <p>
+                  Clears only beta activity: games, availability, and generated notification history. Users, locations, uploaded photos,
+                  location suggestions, and notification opt-in settings stay intact.
+                </p>
+                <label className="admin-confirm-field">
+                  <span>Type RESET BETA DATA to confirm</span>
+                  <input
+                    value={resetConfirmText}
+                    onChange={(event) => setResetConfirmText(event.target.value)}
+                    placeholder="RESET BETA DATA"
+                  />
+                </label>
+                <button
+                  className="admin-danger"
+                  disabled={loading || resetConfirmText !== "RESET BETA DATA"}
+                  onClick={() => void resetBetaData()}
+                >
+                  Reset Beta Data
+                </button>
+              </AdminCollapsiblePanel>
+            </section>
+          )}
         </>
       )}
     </main>
+  );
+}
+
+function AdminMenu({
+  activeSection,
+  onSelect
+}: {
+  activeSection: AdminSectionKey;
+  onSelect: (section: AdminSectionKey) => void;
+}) {
+  return (
+    <nav className="admin-menu" aria-label="Admin sections">
+      {adminSections.map((section) => (
+        <button
+          key={section.key}
+          className={activeSection === section.key ? "active" : ""}
+          onClick={() => onSelect(section.key)}
+          type="button"
+        >
+          <strong>{section.label}</strong>
+          <span>{section.description}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function AdminCollapsiblePanel({
+  title,
+  description,
+  defaultOpen,
+  tone = "default",
+  action,
+  children
+}: {
+  title: string;
+  description: string;
+  defaultOpen: boolean;
+  tone?: "default" | "danger";
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
+
+  return (
+    <section className={`admin-panel admin-collapsible ${tone === "danger" ? "admin-danger-panel" : ""}`}>
+      <div className="admin-collapsible-header">
+        <button
+          aria-expanded={open}
+          className="admin-collapsible-toggle"
+          onClick={() => setOpen((current) => !current)}
+          type="button"
+        >
+          <span>{open ? "Hide" : "Show"}</span>
+          <strong>{title}</strong>
+          <em>{description}</em>
+        </button>
+        {action && <div className="admin-collapsible-action">{action}</div>}
+      </div>
+      {open && <div className="admin-collapsible-body">{children}</div>}
+    </section>
   );
 }
 
@@ -692,6 +835,46 @@ function AdminMetric({ label, value }: { label: string; value: number }) {
     <article className="admin-metric">
       <span>{label}</span>
       <strong>{value}</strong>
+    </article>
+  );
+}
+
+function AdminUserHealthCard({ user }: { user: AdminUserDeviceHealth }) {
+  const buildLabel = user.lastSeenBuild ? `Build ${user.lastSeenBuild}` : "No build yet";
+  const commitLabel = user.lastSeenCommit ? ` · ${user.lastSeenCommit}` : "";
+  const pwaLabel = user.lastSeenStandalone ? "Home Screen app" : "Browser tab";
+  const alertLabel = user.hasEnabledPush
+    ? `${user.enabledPushSubscriptions} alert subscription${user.enabledPushSubscriptions === 1 ? "" : "s"}`
+    : "No alert subscription";
+  const permissionLabel = user.lastSeenNotificationPermission || "unknown";
+
+  return (
+    <article className="admin-card admin-user-health-card">
+      <div className="admin-card-heading">
+        <div>
+          <strong>{user.name}</strong>
+          <span>{user.email || user.uid}</span>
+        </div>
+        <small>{formatAdminLastSeen(user.lastSeenAt)}</small>
+      </div>
+      <div className="admin-health-grid">
+        <span>
+          <strong>{buildLabel}{commitLabel}</strong>
+          <em>Last build</em>
+        </span>
+        <span>
+          <strong>{user.lastSeenPlatform || "unknown"} / {user.lastSeenBrowser || "unknown"}</strong>
+          <em>{pwaLabel}</em>
+        </span>
+        <span>
+          <strong>{permissionLabel}</strong>
+          <em>Notification permission</em>
+        </span>
+        <span>
+          <strong>{alertLabel}</strong>
+          <em>{user.hasStandalonePush ? "Includes Home Screen alerts" : "No Home Screen alert yet"}</em>
+        </span>
+      </div>
     </article>
   );
 }
@@ -907,10 +1090,12 @@ function App() {
   const [liveLocations, setLiveLocations] = useState<Location[]>(locations);
   const [currentUserProfile, setCurrentUserProfile] = useState<User | undefined>();
   const [liveUsers, setLiveUsers] = useState<User[]>([]);
+  const [liveGameUsers, setLiveGameUsers] = useState<User[]>([]);
   const [liveGames, setLiveGames] = useState<Game[]>([]);
   const [liveUserGames, setLiveUserGames] = useState<Game[]>([]);
   const [liveAvailability, setLiveAvailability] = useState<Availability[]>([]);
   const [liveWebPushSubscriptions, setLiveWebPushSubscriptions] = useState<WebPushSubscription[]>([]);
+  const [currentPushEndpoint, setCurrentPushEndpoint] = useState<string | null>(null);
   const [courtPickerGame, setCourtPickerGame] = useState<Game | null>(null);
   const [courtChoice, setCourtChoice] = useState(defaultCourtOptions[0]);
   const [customCourt, setCustomCourt] = useState("");
@@ -950,8 +1135,8 @@ function App() {
     currentVersion: defaultBuildMetadata.version,
     status: "checking"
   });
-  const loadedVersionRef = useRef<string | null>(null);
   const autoUpdateAttemptedRef = useRef(false);
+  const lastDeviceHealthWriteRef = useRef(0);
 
   function completeSignedInUser(user: FirebaseUser, source: "popup" | "redirect" | "session") {
     setActiveTab("home");
@@ -1012,6 +1197,74 @@ function App() {
       document.removeEventListener("visibilitychange", refreshPermission);
     };
   }, []);
+
+  useEffect(() => {
+    if (!firebaseUser) return undefined;
+
+    let cancelled = false;
+    const deviceHealthWriteIntervalMs = 5 * 60 * 1000;
+
+    async function recordDeviceHealth(force = false) {
+      if (!firebaseUser || document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (!force && now - lastDeviceHealthWriteRef.current < deviceHealthWriteIntervalMs) return;
+      lastDeviceHealthWriteRef.current = now;
+
+      try {
+        await updateUserDeviceHealth({
+          userId: firebaseUser.uid,
+          build: buildMetadata.build,
+          version: buildMetadata.version,
+          commit: buildMetadata.commit,
+          platform: pwaInstallState.platform,
+          browser: pwaInstallState.browser,
+          standalone: pwaInstallState.isStandalone,
+          notificationPermission: "Notification" in window ? Notification.permission : "unsupported"
+        });
+      } catch {
+        if (!cancelled) lastDeviceHealthWriteRef.current = 0;
+      }
+    }
+
+    const delayedInitialWrite = window.setTimeout(() => void recordDeviceHealth(true), 1500);
+    const foregroundWrite = () => void recordDeviceHealth();
+
+    window.addEventListener("focus", foregroundWrite);
+    document.addEventListener("visibilitychange", foregroundWrite);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(delayedInitialWrite);
+      window.removeEventListener("focus", foregroundWrite);
+      document.removeEventListener("visibilitychange", foregroundWrite);
+    };
+  }, [firebaseUser, notificationPermission, pwaInstallState.browser, pwaInstallState.isStandalone, pwaInstallState.platform]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshCurrentPushSubscription() {
+      if (!firebaseUser || !pwaInstallState.isStandalone || !("Notification" in window) || Notification.permission !== "granted") {
+        setCurrentPushEndpoint(null);
+        return;
+      }
+
+      try {
+        const subscription = await getExistingWebPushSubscription();
+        if (!cancelled) setCurrentPushEndpoint(subscription ? pushSubscriptionEndpoint(subscription) : null);
+      } catch {
+        if (!cancelled) setCurrentPushEndpoint(null);
+      }
+    }
+
+    void refreshCurrentPushSubscription();
+    window.addEventListener("focus", refreshCurrentPushSubscription);
+    document.addEventListener("visibilitychange", refreshCurrentPushSubscription);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refreshCurrentPushSubscription);
+      document.removeEventListener("visibilitychange", refreshCurrentPushSubscription);
+    };
+  }, [firebaseUser, notificationPermission, pwaInstallState.isStandalone]);
 
   useEffect(() => {
     const check = () => {
@@ -1139,32 +1392,55 @@ function App() {
     );
   }, [firebaseUser]);
 
+  const visibleGamePlayerIds = useMemo(
+    () => [...new Set([...liveGames, ...liveUserGames].flatMap((game) => game.playerIds))],
+    [liveGames, liveUserGames]
+  );
+
+  useEffect(() => {
+    if (!firebaseUser || visibleGamePlayerIds.length === 0) {
+      setLiveGameUsers([]);
+      return undefined;
+    }
+
+    return subscribeUsersByIds(
+      visibleGamePlayerIds,
+      setLiveGameUsers,
+      (error) => setFirebaseStatus(`Game player read failed: ${error.message}`)
+    );
+  }, [firebaseUser, visibleGamePlayerIds]);
+
   const allUsers = useMemo(() => {
     const userMap = new Map<string, User>();
     if (!firebaseUser) {
       seedUsers.forEach((user) => userMap.set(user.uid, user));
     }
     liveUsers.forEach((user) => userMap.set(user.uid, user));
+    liveGameUsers.forEach((user) => userMap.set(user.uid, user));
     if (currentUserProfile) userMap.set(currentUserProfile.uid, currentUserProfile);
     if (firebaseUser) userMap.set(firebaseUser.uid, userMap.get(firebaseUser.uid) || userFromFirebase(firebaseUser, activeLocation.id));
     return Array.from(userMap.values());
-  }, [activeLocation.id, currentUserProfile, firebaseUser, liveUsers]);
+  }, [activeLocation.id, currentUserProfile, firebaseUser, liveGameUsers, liveUsers]);
 
   const userById = useMemo(() => new Map(allUsers.map((user) => [user.uid, user])), [allUsers]);
   const activeUserId = firebaseUser?.uid || currentUserId;
   const liveCurrentUser = firebaseUser ? currentUserProfile || liveUsers.find((user) => user.uid === firebaseUser.uid) : undefined;
   const currentUser = userById.get(activeUserId) || (firebaseUser ? userFromFirebase(firebaseUser, activeLocation.id) : seedUsers[0]);
-  const onlinePlayerCount = allUsers.filter((user) => user.presence !== "offline").length;
+  const locationScopedUsers = useMemo(
+    () => allUsers.filter((user) => user.locationId === activeLocation.id),
+    [activeLocation.id, allUsers]
+  );
+  const onlinePlayerCount = locationScopedUsers.filter((user) => user.presence !== "offline").length;
   const onlinePlayers = useMemo(
     () =>
-      allUsers
+      locationScopedUsers
         .filter((user) => user.presence !== "offline")
         .sort((userA, userB) => {
           if (userA.uid === activeUserId) return -1;
           if (userB.uid === activeUserId) return 1;
           return `${userA.firstName} ${userA.lastName}`.localeCompare(`${userB.firstName} ${userB.lastName}`);
         }),
-    [activeUserId, allUsers]
+    [activeUserId, locationScopedUsers]
   );
   const activeAvailabilityByUserId = useMemo(() => {
     const now = Date.now();
@@ -1254,11 +1530,12 @@ function App() {
     if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) return "unsupported";
     if (!pwaInstallState.isStandalone) return "needsInstall";
     if (!hasPushVapidKey()) return "setupNeeded";
+    if (currentPushEndpoint && liveWebPushSubscriptions.some((subscription) => subscription.enabled && subscription.endpoint === currentPushEndpoint)) return "on";
     if (notificationPermission === "denied") return "blocked";
-    if (liveWebPushSubscriptions.some((subscription) => subscription.enabled)) return "on";
+    if (liveWebPushSubscriptions.some((subscription) => subscription.enabled)) return "onOtherDevice";
     if (notificationPermission === "granted") return "allowedNoToken";
     return "off";
-  }, [liveWebPushSubscriptions, notificationPermission, pwaInstallState.isStandalone]);
+  }, [currentPushEndpoint, liveWebPushSubscriptions, notificationPermission, pwaInstallState.isStandalone]);
   const currentUserAvailability = activeAvailabilityByUserId.get(activeUserId);
   const currentPresence: UserPresence = useMemo(() => {
     const activeGame = statusGame;
@@ -1690,8 +1967,7 @@ function App() {
       const response = await fetch(`/version.json?ts=${Date.now()}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Version check failed.");
       const metadata = readBuildMetadata(await response.json());
-      if (!loadedVersionRef.current) loadedVersionRef.current = metadata.version;
-      const currentVersion = loadedVersionRef.current;
+      const currentVersion = buildMetadata.version;
       const updateAvailable = metadata.version !== currentVersion;
       setAppUpdate({
         appVersion: metadata.appVersion,
@@ -1764,6 +2040,7 @@ function App() {
         browser: pwaInstallState.browser,
         standalone: pwaInstallState.isStandalone
       });
+      setCurrentPushEndpoint(pushSubscriptionEndpoint(subscription));
 
       if ("Notification" in window) setNotificationPermission(Notification.permission);
       trackEvent("match_alerts_enabled", { locationId: activeLocation.id, platform: pwaInstallState.platform });
@@ -1815,6 +2092,15 @@ function App() {
     setMatchFeedback(null);
     setFirebaseStatus(`Now viewing ${location.name}.`);
     trackEvent("location_switched", { locationId: location.id });
+
+    if (firebaseUser) {
+      setUserActiveLocation(firebaseUser.uid, location.id)
+        .then(() => setFirebaseStatus(`Now viewing ${location.name}. Match alerts follow this location.`))
+        .catch((error: Error) => {
+          setFirebaseStatus(`Location switched, but alert location save failed: ${error.message}`);
+        });
+    }
+
     const canRefreshPushSilently =
       firebaseUser &&
       "Notification" in window &&
@@ -2997,11 +3283,13 @@ function MeScreen({
           : "Checking for the latest build.";
   const alertTitle =
     alertPermissionState === "on"
-      ? "Match Alerts are On"
+      ? "Alerts on this device"
       : alertPermissionState === "blocked"
         ? "Notifications are blocked"
         : alertPermissionState === "allowedNoToken"
           ? "Finish Match Alerts"
+          : alertPermissionState === "onOtherDevice"
+            ? "Alerts on another device"
           : "Match Alerts";
   const alertBody =
     alertPermissionState === "on"
@@ -3014,10 +3302,12 @@ function MeScreen({
             ? "Notifications are allowed. Tap again to finish setup."
             : alertPermissionState === "blocked"
               ? "Turn notifications back on in Safari settings."
+              : alertPermissionState === "onOtherDevice"
+                ? "This account has alerts elsewhere. Tap to enable alerts on this device."
               : alertPermissionState === "unsupported"
                 ? "This browser does not support match alerts."
                 : "Get notified when matches need your attention.";
-  const canEnableAlerts = alertPermissionState === "off" || alertPermissionState === "allowedNoToken";
+  const canEnableAlerts = alertPermissionState === "off" || alertPermissionState === "allowedNoToken" || alertPermissionState === "onOtherDevice";
   const homeLocationId = currentUser.homeLocationId || currentUser.locationId;
   async function sharePaddleUpLink() {
     const text = "Join me on PaddleUp. On iPhone, open in Safari for the best app experience.";
@@ -3190,24 +3480,85 @@ function SharePaddleUpSheet({
 function InstallGuideSheet({ pwaInstallState, onClose }: { pwaInstallState: PwaInstallState; onClose: () => void }) {
   const isAndroid = pwaInstallState.platform === "android";
   const steps = isAndroid
-    ? ["Tap the browser menu", "Tap Add to Home screen", "Open PaddleUp from the new icon"]
-    : ["Tap the Share button", "Scroll if needed", "Tap Add to Home Screen", "Tap Add", "Open PaddleUp from the new icon"];
+    ? [
+        { icon: "menu", title: "Tap the browser menu", detail: "Look for the menu button in your browser toolbar." },
+        { icon: "home", title: "Tap Add to Home screen", detail: "Choose the install or Home Screen option." },
+        { icon: "app", title: "Open PaddleUp from the new icon", detail: "Then return to Profile and turn on Match Alerts." }
+      ]
+    : [
+        { icon: "more", title: "Tap the ... button", detail: "In Safari on iPhone, it is usually in the lower-right toolbar." },
+        { icon: "share", title: "Tap Share", detail: "Look for the square with the upward arrow." },
+        { icon: "home", title: "Tap Add to Home Screen", detail: "Scroll the Share menu if you do not see it right away." },
+        { icon: "add", title: "Tap Add", detail: "Confirm the PaddleUp icon on your Home Screen." },
+        { icon: "app", title: "Open PaddleUp from the new icon", detail: "Then return to Profile and turn on Match Alerts." }
+      ];
 
   return (
-    <div className="court-sheet-backdrop" role="presentation" onClick={onClose}>
+    <div className="court-sheet-backdrop install-guide-backdrop" role="presentation" onClick={onClose}>
       <section className="court-sheet install-guide glass-panel" role="dialog" aria-modal="true" aria-label="How to get match alerts" onClick={(event) => event.stopPropagation()}>
         <SectionTitle title="How to Get Match Alerts" action="Close" onClick={onClose} />
-        <p>Add PaddleUp as a Home Screen app first. Then open it from the icon to turn on match alerts.</p>
+        <p>In Safari, add PaddleUp to your Home Screen first. Then open it from the new icon to turn on match alerts.</p>
         <div className="install-guide-steps">
           {steps.map((step, index) => (
-            <article key={step}>
-              <span>{index + 1}</span>
-              <strong>{step}</strong>
+            <article key={step.title}>
+              <span className="install-step-number">{index + 1}</span>
+              <InstallStepIcon type={step.icon} />
+              <div>
+                <strong>{step.title}</strong>
+                <small>{step.detail}</small>
+              </div>
             </article>
           ))}
         </div>
       </section>
     </div>
+  );
+}
+
+function InstallStepIcon({ type }: { type: string }) {
+  if (type === "more" || type === "menu") {
+    return (
+      <span className="install-step-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <circle cx="5" cy="12" r="2.2" />
+          <circle cx="12" cy="12" r="2.2" />
+          <circle cx="19" cy="12" r="2.2" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (type === "share") {
+    return (
+      <span className="install-step-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 14V4" />
+          <path d="M8 8l4-4 4 4" />
+          <path d="M6 11v8h12v-8" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (type === "add") {
+    return (
+      <span className="install-step-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+        </svg>
+      </span>
+    );
+  }
+
+  return (
+    <span className="install-step-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24">
+        <path d="M5 11l7-6 7 6" />
+        <path d="M7 10v9h10v-9" />
+        <path d="M10 19v-5h4v5" />
+      </svg>
+    </span>
   );
 }
 
@@ -3408,7 +3759,7 @@ function GameCard({
       ? formatCountdown(activeUntil, nowMs)
       : undefined;
   const courtLabel = game.court || "Assign Court";
-  const playerSummary = players.length > 0 ? players.map(shortPlayerName).join(" · ") : "No players yet";
+  const playerSummary = playerNameSummary(players);
 
   return (
     <article className={`game-card glass-panel ${game.status} ${isSelected ? "selected" : ""}`}>
@@ -3488,16 +3839,19 @@ function FormingGame({
   const missing = game.requiredPlayers - game.playerIds.length;
   const timing = gameTimeLabel(game);
   const isInGame = game.playerIds.includes(activeUserId);
+  const players = game.playerIds.map((id) => userById.get(id)!).filter(Boolean);
+  const playerSummary = playerNameSummary(players);
   return (
     <article className="forming-row glass-panel">
       <div>
         <strong className="match-type-heading"><CourtIcon /> {formatMatchType(game.type)}</strong>
         <span className="forming-window">{timing}</span>
         <span>{game.playerIds.length}/{game.requiredPlayers} joined · {missing > 0 ? `${missing} needed` : "Players set"}</span>
+        <p className="player-summary forming-player-summary">{playerSummary}</p>
         {game.court && <em>{game.court}</em>}
       </div>
       <div className="forming-side">
-        <AvatarStack users={game.playerIds.map((id) => userById.get(id)!).filter(Boolean)} missing={missing} />
+        <AvatarStack users={players} missing={missing} />
         {isInGame ? (
           <button className="forming-action secondary" onClick={onView}>View Match</button>
         ) : (
@@ -3508,6 +3862,10 @@ function FormingGame({
       </div>
     </article>
   );
+}
+
+function playerNameSummary(players: User[]) {
+  return players.length > 0 ? players.map(shortPlayerName).join(" · ") : "No players yet";
 }
 
 function Segmented({ value, options, onChange }: { value: string; options: string[][]; onChange: (value: string) => void }) {

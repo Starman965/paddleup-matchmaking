@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "prebuild": "node scripts/generate-version.mjs",
     "build": "tsc && vite build",
+    "build:release": "node scripts/generate-version.mjs && npm run build",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {

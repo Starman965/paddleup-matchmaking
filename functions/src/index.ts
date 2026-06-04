@@ -87,15 +87,27 @@ type WebPushSubscription = {
 
 type UserProfile = {
   uid?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
   locationId?: string;
+  homeLocationId?: string;
   presence?: "visible" | "offline";
+  lastSeenBuild?: string;
+  lastSeenVersion?: string;
+  lastSeenCommit?: string;
+  lastSeenAt?: unknown;
+  lastSeenPlatform?: string;
+  lastSeenBrowser?: string;
+  lastSeenStandalone?: boolean;
+  lastSeenNotificationPermission?: string;
 };
 
 type AppNotification = {
   id?: string;
   userId?: string;
   gameId?: string;
-  type?: "matchPosted" | "playerJoined" | "formingGame" | "gameConfirmed" | "courtAssigned" | "playerLeft";
+  type?: "matchPosted" | "playerJoined" | "formingGame" | "gameConfirmed" | "courtAssigned" | "playerLeft" | "testPush";
   title?: string;
   body?: string;
 };
@@ -142,6 +154,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     logger.warn("Availability missing userId or locationId", { availabilityId, availability });
     return;
   }
+  const locationId = availability.locationId;
 
   const now = new Date();
   const latestMatchDeadline = new Date(now.getTime() + MATCH_LEAD_TIME_MINUTES * 60 * 1000);
@@ -158,7 +171,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
 
   const activeAvailabilitySnapshot = await db
     .collection("availability")
-    .where("locationId", "==", availability.locationId)
+    .where("locationId", "==", locationId)
     .where("type", "==", availabilityType)
     .get();
 
@@ -182,23 +195,21 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
   await db.runTransaction(async (transaction) => {
     const formingQuery = db
       .collection("games")
-      .where("locationId", "==", availability.locationId)
+      .where("locationId", "==", locationId)
       .where("type", "==", "doubles")
       .where("status", "==", "forming");
     const confirmedQuery = db
       .collection("games")
-      .where("locationId", "==", availability.locationId)
+      .where("locationId", "==", locationId)
       .where("type", "==", "doubles")
       .where("status", "==", "confirmed");
+    const locationRef = db.collection("locations").doc(locationId);
 
     const formingSnapshot = await transaction.get(formingQuery);
     const confirmedSnapshot = await transaction.get(confirmedQuery);
-    const usersSnapshot = await transaction.get(db.collection("users").where("locationId", "==", availability.locationId));
-    const pushSubscriptionsSnapshot = await transaction.get(
-      db
-        .collection("pushSubscriptions")
-        .where("locationId", "==", availability.locationId)
-    );
+    const usersSnapshot = await transaction.get(db.collection("users").where("locationId", "==", locationId));
+    const locationSnapshot = await transaction.get(locationRef);
+    const locationName = readAdminString(locationSnapshot.data()?.name, "your location");
     const formingDoc = formingSnapshot.docs.find((doc) => {
       const game = doc.data() as Partial<Game>;
       const gameRange = gameWindow(game);
@@ -249,7 +260,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
         availabilityId,
         availabilityType,
         skippedPlayerIds,
-        locationId: availability.locationId
+        locationId
       });
       return;
     }
@@ -272,7 +283,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
 
     const game: Game = {
       id: gameRef.id,
-      locationId: availability.locationId!,
+      locationId,
       type: "doubles",
       availabilityType,
       status,
@@ -295,7 +306,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
     const notificationBody =
       status === "confirmed"
         ? `${availabilityLabel(availabilityType)} match confirmed. Court TBD.`
-        : `Need ${REQUIRED_DOUBLES_PLAYERS - selection.playerIds.length} more at Blackhawk.`;
+        : `Need ${REQUIRED_DOUBLES_PLAYERS - selection.playerIds.length} more at ${locationName}.`;
 
     for (const playerId of selection.playerIds) {
       const notificationRef = db.collection("notifications").doc(`${gameRef.id}_${notificationType}_${playerId}`);
@@ -345,17 +356,9 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
           return ((doc.data() as Partial<Game>).playerIds ?? []);
         })
       );
-      const optedInUserIds = unique(
-        pushSubscriptionsSnapshot.docs
-          .map((doc) => doc.data() as WebPushSubscription)
-          .filter((subscription) => subscription.enabled !== false)
-          .map((subscription) => subscription.userId)
-          .filter((userId): userId is string => typeof userId === "string" && userId.length > 0)
-      );
-
-      for (const userId of optedInUserIds) {
-        const user = usersById.get(userId);
-        if (!user || user.presence === "offline" || userId === creatorId || activePlayerIds.has(userId)) continue;
+      for (const [userId, user] of usersById) {
+        const removedPlaymate = disabledPairs.includes(pairKey(userId, creatorId));
+        if (!user || user.presence === "offline" || userId === creatorId || activePlayerIds.has(userId) || removedPlaymate) continue;
         const notificationRef = db.collection("notifications").doc(`${gameRef.id}_matchPosted_beta_${userId}`);
         transaction.set(
           notificationRef,
@@ -365,7 +368,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
             gameId: gameRef.id,
             type: "matchPosted",
             title: "New doubles game posted",
-            body: "A player is looking for a doubles game at Blackhawk.",
+            body: `A player is looking for a doubles game at ${locationName}.`,
             read: false,
             createdAt: FieldValue.serverTimestamp()
           },
@@ -381,7 +384,7 @@ export const matchReadyNowDoubles = onDocumentWritten("availability/{availabilit
       playerCount: selection.playerIds.length,
       skippedPlayerIds,
       incompatiblePlayerIds,
-      locationId: availability.locationId
+      locationId
     });
   });
 });
@@ -533,10 +536,13 @@ export const joinGame = onCall(async (request) => {
       .collection("games")
       .where("locationId", "==", game.locationId)
       .where("status", "==", "confirmed");
-    const [formingSnapshot, confirmedSnapshot] = await Promise.all([
+    const locationRef = db.collection("locations").doc(game.locationId);
+    const [formingSnapshot, confirmedSnapshot, locationSnapshot] = await Promise.all([
       transaction.get(formingQuery),
-      transaction.get(confirmedQuery)
+      transaction.get(confirmedQuery),
+      transaction.get(locationRef)
     ]);
+    const locationName = readAdminString(locationSnapshot.data()?.name, "your location");
 
     const overlappingGame = [...formingSnapshot.docs, ...confirmedSnapshot.docs].find((doc) => {
       if (doc.id === gameRef.id) return false;
@@ -573,7 +579,7 @@ export const joinGame = onCall(async (request) => {
     const notificationBody =
       status === "confirmed"
         ? `${availabilityLabel(game.availabilityType ?? "readyNow")} match confirmed. Court TBD.`
-        : `Need ${game.requiredPlayers - playerIds.length} more at Blackhawk.`;
+        : `Need ${game.requiredPlayers - playerIds.length} more at ${locationName}.`;
 
     for (const playerId of playerIds) {
       const notificationRef = db.collection("notifications").doc(`${gameRef.id}_${notificationType}_${playerId}`);
@@ -772,6 +778,30 @@ export const resetTestData = onCall(async (request) => {
   };
 });
 
+export const sendTestPushToMe = onCall({ secrets: [webPushVapidPrivateKey] }, async (request) => {
+  assertAdmin(request.auth?.token.email);
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sign in before sending a test push.");
+  }
+
+  const notificationId = `testPush_${uid}_${Date.now()}`;
+  const result = await sendPushToUser(uid, {
+    title: "PaddleUp test alert",
+    body: "Your PaddleUp match alerts are working.",
+    notificationId,
+    type: "testPush"
+  });
+
+  logger.info("Admin sent test push", {
+    admin: request.auth?.token.email,
+    uid,
+    notificationId,
+    ...result
+  });
+  return result;
+});
+
 export const updateLocationCourts = onCall(async (request) => {
   assertAdmin(request.auth?.token.email);
 
@@ -805,14 +835,25 @@ export const updateLocationCourts = onCall(async (request) => {
 export const getAdminDashboard = onCall(async (request) => {
   assertAdmin(request.auth?.token.email);
 
-  const [usersSnapshot, gamesSnapshot, locationsSnapshot, suggestionsSnapshot] = await Promise.all([
+  const [usersSnapshot, gamesSnapshot, locationsSnapshot, suggestionsSnapshot, pushSubscriptionsSnapshot] = await Promise.all([
     db.collection("users").get(),
     db.collection("games").get(),
     db.collection("locations").get(),
-    db.collection("locationSuggestions").where("status", "==", "pending").get()
+    db.collection("locationSuggestions").where("status", "==", "pending").get(),
+    db.collection("pushSubscriptions").where("enabled", "==", true).get()
   ]);
 
   const games = gamesSnapshot.docs.map((doc) => doc.data() as Partial<Game>);
+  const enabledPushByUser = new Map<string, { total: number; standalone: number }>();
+  pushSubscriptionsSnapshot.docs.forEach((doc) => {
+    const subscription = doc.data() as WebPushSubscription & { standalone?: boolean };
+    if (!subscription.userId) return;
+    const current = enabledPushByUser.get(subscription.userId) ?? { total: 0, standalone: 0 };
+    current.total += 1;
+    if (subscription.standalone === true) current.standalone += 1;
+    enabledPushByUser.set(subscription.userId, current);
+  });
+
   return {
     users: usersSnapshot.size,
     games: gamesSnapshot.size,
@@ -821,7 +862,34 @@ export const getAdminDashboard = onCall(async (request) => {
     completedGames: games.filter((game) => game.status === "completed").length,
     locations: locationsSnapshot.size,
     pendingLocationSuggestions: suggestionsSnapshot.size,
-    locationRows: locationsSnapshot.docs.map((doc) => serializeLocation(doc.id, doc.data()))
+    locationRows: locationsSnapshot.docs.map((doc) => serializeLocation(doc.id, doc.data())),
+    userRows: usersSnapshot.docs
+      .map((doc) => {
+        const user = doc.data() as UserProfile;
+        const uid = user.uid ?? doc.id;
+        const push = enabledPushByUser.get(uid) ?? { total: 0, standalone: 0 };
+        const name = [readAdminString(user.firstName), readAdminString(user.lastName)].filter(Boolean).join(" ") || "Player";
+        return {
+          uid,
+          name,
+          email: readAdminString(user.email),
+          locationId: readAdminString(user.locationId),
+          homeLocationId: readAdminString(user.homeLocationId),
+          presence: user.presence === "offline" ? "offline" : "visible",
+          lastSeenBuild: readAdminString(user.lastSeenBuild),
+          lastSeenVersion: readAdminString(user.lastSeenVersion),
+          lastSeenCommit: readAdminString(user.lastSeenCommit),
+          lastSeenAt: serializeTimestamp(user.lastSeenAt),
+          lastSeenPlatform: readAdminString(user.lastSeenPlatform),
+          lastSeenBrowser: readAdminString(user.lastSeenBrowser),
+          lastSeenStandalone: user.lastSeenStandalone === true,
+          lastSeenNotificationPermission: readAdminString(user.lastSeenNotificationPermission),
+          enabledPushSubscriptions: push.total,
+          hasEnabledPush: push.total > 0,
+          hasStandalonePush: push.standalone > 0
+        };
+      })
+      .sort((userA, userB) => (userB.lastSeenAt || "").localeCompare(userA.lastSeenAt || ""))
   };
 });
 
@@ -1122,7 +1190,7 @@ function assertAdmin(email: unknown) {
 }
 
 function shouldSendPush(notification: AppNotification) {
-  if (notification.type === "matchPosted" || notification.type === "playerJoined") return true;
+  if (notification.type === "matchPosted" || notification.type === "playerJoined" || notification.type === "testPush") return true;
   if (notification.type === "gameConfirmed" || notification.type === "courtAssigned" || notification.type === "playerLeft") return true;
   if (notification.type === "formingGame") return notification.body?.toLowerCase().includes("need 1 more") === true;
   return false;
@@ -1220,6 +1288,11 @@ async function sendPushToUser(
     successCount: webPushSuccessCount,
     failureCount: webPushFailureCount
   });
+  return {
+    webPushSuccessCount,
+    webPushFailureCount,
+    disabledSubscriptions: disabledSubscriptions.length
+  };
 }
 
 async function deleteInBatches(refs: FirebaseFirestore.DocumentReference[]) {
